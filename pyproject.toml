@@ -21,8 +21,23 @@ dev = [
 ]
 
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = [
+    "core",
+    "cognition", "cognition.reasoning", "cognition.planning",
+    "cognition.strategies", "cognition.world_model",
+    "language", "language.arabic",
+    "knowledge", "memory", "learning",
+    "agents", "skills", "workflows",
+    "models", "models.providers",
+    "tools", "tools.built_in",
+    "evaluation", "evaluation.benchmarks",
+    "governance", "security",
+    "api", "cli", "config",
+]
 
 [tool.ruff]
 line-length = 100
@@ -37,24 +52,3 @@ python_version = "3.11"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-
-[tool.hatch.build.targets.wheel]
-packages = [
-    "core",
-    "cognition",
-    "language",
-    "knowledge",
-    "memory",
-    "learning",
-    "agents",
-    "skills",
-    "workflows",
-    "models",
-    "tools",
-    "evaluation",
-    "governance",
-    "security",
-    "api",
-    "cli",
-    "config",
-]
