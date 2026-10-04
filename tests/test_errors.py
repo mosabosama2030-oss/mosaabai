@@ -238,3 +238,58 @@ def test_result_err_must_carry_error() -> None:
         raise AssertionError("Expected ValueError for Err without error")
     except ValueError:
         pass
+
+
+class _EvilIter:
+    def __iter__(self):
+        raise RuntimeError("adversarial iter")
+
+    def keys(self):
+        raise RuntimeError("adversarial keys")
+
+
+class _EvilStr:
+    def __str__(self):
+        raise RuntimeError("adversarial str")
+
+
+def test_context_evil_iter_handled_silently() -> None:
+    obj = MosaabError(code=ErrorCode.tool_failure, message="ok", context=_EvilIter())  # type: ignore[arg-type]
+    assert obj.context is not None
+    assert "context_malformed" in obj._truncation_flags
+
+
+def test_context_evil_str_handled_silently() -> None:
+    obj = MosaabError(code=ErrorCode.tool_failure, message="ok", context=_EvilStr())  # type: ignore[arg-type]
+    assert obj.context is not None
+    assert "context_malformed" in obj._truncation_flags
+
+
+def test_context_evil_value_str_handled_silently() -> None:
+    obj = MosaabError(code=ErrorCode.tool_failure, message="ok", context={"k": _EvilStr()})
+    assert obj.context is not None
+    assert "<unrepresentable" in obj.context["k"] or "unrepresentable" in obj.context["k"]
+
+
+def test_message_evil_str_handled_silently() -> None:
+    obj = MosaabError(code=ErrorCode.tool_failure, message=_EvilStr())  # type: ignore[arg-type]
+    assert isinstance(obj.message, str)
+    assert len(obj.message) <= 1000
+
+
+def test_bounded_context_never_raises_comprehensive() -> None:
+    adversarial_inputs = [
+        None,
+        "string",
+        123,
+        [1, 2, 3],
+        {"ok": "value", "bad": _EvilStr()},
+        {"k1": "v", "k2": 42, "k3": [1, 2]},
+        {_EvilStr(): "value"},
+    ]
+    for inp in adversarial_inputs:
+        try:
+            obj = MosaabError(code=ErrorCode.tool_failure, message="test", context=inp)  # type: ignore[arg-type]
+            assert obj.context is not None or inp is None
+        except BaseException as exc:
+            raise AssertionError(f"Bounding raised on input {type(inp).__name__}: {exc}") from exc
