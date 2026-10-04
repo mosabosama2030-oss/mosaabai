@@ -103,24 +103,6 @@ def test_mosaab_error_preserves_retryable() -> None:
     assert MosaabError(ErrorCode.tool_failure, "boom").retryable is False
 
 
-def test_mosaab_error_bounds_message() -> None:
-    boundary = MosaabError(ErrorCode.validation_failure, "x" * 1000)
-    assert len(boundary.message) == 1000
-    with pytest.raises(ValueError, match="1000"):
-        MosaabError(ErrorCode.validation_failure, "x" * 1001)
-
-
-def test_mosaab_error_bounds_context() -> None:
-    ok_context = {f"k{i}": "v" for i in range(10)}
-    assert (
-        len(MosaabError(ErrorCode.resource_exhaustion, "fits", context=ok_context).context or {})
-        == 10
-    )
-    too_many = {f"k{i}": "v" for i in range(11)}
-    with pytest.raises(ValueError, match="10 keys"):
-        MosaabError(ErrorCode.resource_exhaustion, "too many", context=too_many)
-    with pytest.raises(ValueError, match="500"):
-        MosaabError(ErrorCode.resource_exhaustion, "long value", context={"k": "v" * 501})
 
 
 def test_mosaab_error_no_raw_exception_leak() -> None:
@@ -171,3 +153,143 @@ def test_result_err_unwrap_raises_value_error() -> None:
     result = err(ErrorCode.authorization_failure, "denied")
     with pytest.raises(ValueError, match="denied"):
         result.unwrap()
+
+
+def test_message_truncated_silently() -> None:
+    error = MosaabError(code=ErrorCode.tool_failure, message="A" * 1500)
+    assert len(error.message) == 1000
+    assert error.message.endswith("...[TRUNCATED]")
+
+
+def test_context_keys_truncated_silently() -> None:
+    ctx = {f"k{i:02d}": i for i in range(15)}
+    error = MosaabError(code=ErrorCode.validation_failure, message="ok", context=ctx)
+    assert error.context is not None
+    assert len(error.context) == 10
+    assert list(error.context.keys()) == sorted(ctx.keys())[:10]
+
+
+def test_context_value_truncated_silently() -> None:
+    error = MosaabError(code=ErrorCode.tool_failure, message="ok", context={"k": "B" * 800})
+    assert error.context is not None
+    assert len(error.context["k"]) == 500
+    assert error.context["k"].endswith("...[TRUNCATED]")
+
+
+def test_truncation_flags_recorded() -> None:
+    ctx = {f"k{i:02d}": "C" * 800 for i in range(15)}
+    error = MosaabError(code=ErrorCode.tool_failure, message="D" * 1500, context=ctx)
+    flags = error._truncation_flags
+    assert "message" in flags
+    assert "context_keys" in flags
+    assert "context_value" in flags
+    assert error.to_dict()["_truncated"] == list(flags)
+
+
+def test_no_valueerror_during_bounding() -> None:
+    try:
+        ctx = {f"k{i}": "Y" * 2000 for i in range(50)}
+        MosaabError(
+            code=ErrorCode.tool_failure,
+            message="X" * 10000,
+            context=ctx,
+        )
+    except ValueError as exc:
+        raise AssertionError("ValueError during bounding: " + str(exc)) from exc
+
+
+def test_truncation_deterministic() -> None:
+    ctx = {f"k{i:02d}": "Z" * 800 for i in range(15)}
+    e1 = MosaabError(code=ErrorCode.tool_failure, message="A" * 1500, context=ctx)
+    e2 = MosaabError(code=ErrorCode.tool_failure, message="A" * 1500, context=ctx)
+    assert e1.message == e2.message
+    assert e1.context == e2.context
+    assert e1._truncation_flags == e2._truncation_flags
+
+
+def test_context_malformed_handled_silently() -> None:
+    err_obj = MosaabError(code=ErrorCode.tool_failure, message="ok", context="not-a-dict")
+    assert err_obj.context is not None
+    assert "context_malformed" in err_obj._truncation_flags
+
+
+def test_context_non_string_coerced_to_str() -> None:
+    err_obj = MosaabError(
+        code=ErrorCode.tool_failure,
+        message="ok",
+        context={"num": 42, "lst": [1, 2, 3]},
+    )
+    assert err_obj.context is not None
+    assert isinstance(err_obj.context["num"], str)
+    assert isinstance(err_obj.context["lst"], str)
+
+
+def test_result_ok_cannot_carry_error() -> None:
+    try:
+        Result(_is_ok=True, _error=MosaabError(code=ErrorCode.tool_failure, message="x"))
+        raise AssertionError("Expected ValueError for Ok with error")
+    except ValueError:
+        pass
+
+
+def test_result_err_must_carry_error() -> None:
+    try:
+        Result(_is_ok=False, _error=None)
+        raise AssertionError("Expected ValueError for Err without error")
+    except ValueError:
+        pass
+
+
+class _EvilIter:
+    def __iter__(self):
+        raise RuntimeError("adversarial iter")
+
+    def keys(self):
+        raise RuntimeError("adversarial keys")
+
+
+class _EvilStr:
+    def __str__(self):
+        raise RuntimeError("adversarial str")
+
+
+def test_context_evil_iter_handled_silently() -> None:
+    obj = MosaabError(code=ErrorCode.tool_failure, message="ok", context=_EvilIter())  # type: ignore[arg-type]
+    assert obj.context is not None
+    assert "context_malformed" in obj._truncation_flags
+
+
+def test_context_evil_str_handled_silently() -> None:
+    obj = MosaabError(code=ErrorCode.tool_failure, message="ok", context=_EvilStr())  # type: ignore[arg-type]
+    assert obj.context is not None
+    assert "context_malformed" in obj._truncation_flags
+
+
+def test_context_evil_value_str_handled_silently() -> None:
+    obj = MosaabError(code=ErrorCode.tool_failure, message="ok", context={"k": _EvilStr()})
+    assert obj.context is not None
+    assert "<unrepresentable" in obj.context["k"] or "unrepresentable" in obj.context["k"]
+
+
+def test_message_evil_str_handled_silently() -> None:
+    obj = MosaabError(code=ErrorCode.tool_failure, message=_EvilStr())  # type: ignore[arg-type]
+    assert isinstance(obj.message, str)
+    assert len(obj.message) <= 1000
+
+
+def test_bounded_context_never_raises_comprehensive() -> None:
+    adversarial_inputs = [
+        None,
+        "string",
+        123,
+        [1, 2, 3],
+        {"ok": "value", "bad": _EvilStr()},
+        {"k1": "v", "k2": 42, "k3": [1, 2]},
+        {_EvilStr(): "value"},
+    ]
+    for inp in adversarial_inputs:
+        try:
+            obj = MosaabError(code=ErrorCode.tool_failure, message="test", context=inp)  # type: ignore[arg-type]
+            assert obj.context is not None or inp is None
+        except BaseException as exc:
+            raise AssertionError(f"Bounding raised on input {type(inp).__name__}: {exc}") from exc
