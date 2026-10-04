@@ -7,10 +7,10 @@ returned list (most relevant first).
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 
 
-class Strategy(str, Enum):
+class Strategy(StrEnum):
     """Reasoning strategies the cognitive loop can employ."""
 
     DEDUCTIVE = "deductive"

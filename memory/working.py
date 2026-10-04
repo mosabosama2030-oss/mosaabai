@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 
@@ -13,7 +13,7 @@ class WorkingMemoryEntry:
 
     key: str
     value: Any
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     ttl_seconds: int | None = None
 
 
@@ -66,5 +66,5 @@ class WorkingMemory:
     def _is_expired(entry: WorkingMemoryEntry) -> bool:
         if entry.ttl_seconds is None:
             return False
-        elapsed = (datetime.now(timezone.utc) - entry.created_at).total_seconds()
+        elapsed = (datetime.now(UTC) - entry.created_at).total_seconds()
         return elapsed > entry.ttl_seconds

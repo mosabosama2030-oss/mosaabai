@@ -7,12 +7,12 @@ Understand -> Model -> Plan -> Execute -> Observe -> Evaluate -> Replan -> Verif
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from enum import Enum
+from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any
 
 
-class LoopStage(str, Enum):
+class LoopStage(StrEnum):
     """Stages of the cognitive loop."""
 
     UNDERSTAND = "understand"
@@ -45,7 +45,7 @@ class TaskResult:
     answer: str | None = None
     stages: list[LoopStage] = field(default_factory=list)
     error: str | None = None
-    started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     finished_at: datetime | None = None
 
 
@@ -75,7 +75,7 @@ class CognitiveLoop:
                 result.success = False
                 break
 
-        result.finished_at = datetime.now(timezone.utc)
+        result.finished_at = datetime.now(UTC)
         return result
 
     async def _run_stage(self, stage: LoopStage, task: Task, result: TaskResult) -> None:

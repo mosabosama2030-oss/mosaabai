@@ -7,7 +7,6 @@ import pytest
 from memory.episodic import Episode, EpisodicMemory
 from memory.semantic import SemanticMemory
 
-
 # ---- Episodic ----
 
 def _make_episode(id_: str, success: bool = True) -> Episode:
