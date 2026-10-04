@@ -1,25 +1,19 @@
-"""Canonical error envelope for MosaabAI (EO-002 / Canonical Architecture A0.2).
-
-Standard library only: no Pydantic, no external dependencies.
-Deterministic, JSON-safe, and bounded serialization with no raw traceback exposure.
-"""
+"""Bounded, JSON-safe error envelope for MosaabAI."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Generic, TypeVar, cast
+from typing import Any, Generic, TypeVar
 
 T = TypeVar("T")
-
 MAX_MESSAGE_CHARS = 1000
 MAX_CONTEXT_KEYS = 10
 MAX_CONTEXT_VALUE_CHARS = 500
+TRUNCATION_MARKER = "...[TRUNCATED]"
 
 
 class ErrorCode(Enum):
-    """The 11 architectural failure states of MosaabAI."""
-
     validation_failure = "validation_failure"
     authorization_failure = "authorization_failure"
     sandbox_failure = "sandbox_failure"
@@ -33,100 +27,107 @@ class ErrorCode(Enum):
     verification_failure = "verification_failure"
 
 
-def _stringify_cause(cause: Exception) -> dict[str, str]:
-    """Reduce an exception to a safe {type, message} pair — never the raw object."""
+def _truncate_string(value, limit):
+    if not isinstance(value, str):
+        return value, False
+    if len(value) <= limit:
+        return value, False
+    keep = max(0, limit - len(TRUNCATION_MARKER))
+    return value[:keep] + TRUNCATION_MARKER, True
+
+
+def _serialize_cause(cause):
+    if cause is None:
+        return None
     return {"type": type(cause).__name__, "message": str(cause)}
+
+
+def _bounded_context(context):
+    flags = []
+    bounded = {}
+    if len(context) > MAX_CONTEXT_KEYS:
+        keys = sorted(context.keys())[:MAX_CONTEXT_KEYS]
+        flags.append("context_keys")
+    else:
+        keys = sorted(context.keys())
+    for key in keys:
+        value = context[key]
+        if isinstance(value, str):
+            new_val, trunc = _truncate_string(value, MAX_CONTEXT_VALUE_CHARS)
+            if trunc:
+                if "context_value" not in flags:
+                    flags.append("context_value")
+                value = new_val
+        bounded[key] = value
+    return bounded, flags
 
 
 @dataclass(frozen=True)
 class MosaabError:
-    """Bounded, JSON-safe error envelope (I-011 resource boundedness)."""
-
     code: ErrorCode
     message: str
     version: str = "1.0.0"
     fatal: bool = False
     retryable: bool = False
-    context: dict[str, Any] | None = None
-    trace_id: str | None = None
-    cause: Exception | None = None
+    context: dict = None
+    trace_id: str = None
+    cause: Exception = None
+    _truncation_flags: tuple = field(default_factory=tuple, compare=False, repr=False)
 
-    def __post_init__(self) -> None:
-        if len(self.message) > MAX_MESSAGE_CHARS:
-            raise ValueError(f"message exceeds {MAX_MESSAGE_CHARS} characters")
+    def __post_init__(self):
+        flags = []
+        new_msg, msg_trunc = _truncate_string(self.message, MAX_MESSAGE_CHARS)
+        if msg_trunc:
+            flags.append("message")
+            object.__setattr__(self, "message", new_msg)
         if self.context is not None:
-            object.__setattr__(self, "context", self._bounded_context())
+            bounded, ctx_flags = _bounded_context(self.context)
+            object.__setattr__(self, "context", bounded)
+            flags.extend(ctx_flags)
+        if flags:
+            object.__setattr__(self, "_truncation_flags", tuple(flags))
 
-    def _bounded_context(self) -> dict[str, Any]:
-        """Enforce context bounds: <=10 keys, values coerced to str of <=500 chars."""
-        if not isinstance(self.context, dict):
-            raise ValueError("context must be a dict or None")
-        if len(self.context) > MAX_CONTEXT_KEYS:
-            raise ValueError(f"context exceeds {MAX_CONTEXT_KEYS} keys")
-        bounded: dict[str, Any] = {}
-        for key, value in self.context.items():
-            text = value if isinstance(value, str) else str(value)
-            if len(text) > MAX_CONTEXT_VALUE_CHARS:
-                raise ValueError(
-                    f"context value for {key!r} exceeds {MAX_CONTEXT_VALUE_CHARS} characters"
-                )
-            bounded[key] = text
-        return bounded
-
-    def to_dict(self) -> dict[str, Any]:
-        """Deterministic JSON-safe dict with sorted keys; cause reduced to strings."""
-        payload: dict[str, Any] = {
+    def to_dict(self):
+        return {
+            "_truncated": list(self._truncation_flags),
+            "cause": _serialize_cause(self.cause),
             "code": self.code.value,
-            "message": self.message,
-            "version": self.version,
+            "context": dict(self.context) if self.context else None,
             "fatal": self.fatal,
+            "message": self.message,
             "retryable": self.retryable,
-            "context": dict(self.context) if self.context is not None else None,
             "trace_id": self.trace_id,
-            "cause": _stringify_cause(self.cause) if self.cause is not None else None,
+            "version": self.version,
         }
-        return {key: payload[key] for key in sorted(payload)}
 
 
 @dataclass(frozen=True)
 class Result(Generic[T]):
-    """Immutable success-or-error container (Result monad)."""
-
-    _value: T | None = None
-    _error: MosaabError | None = None
+    _value: Any = None
+    _error: Any = None
     _is_ok: bool = True
 
-    def __post_init__(self) -> None:
-        if self._is_ok and self._error is not None:
-            raise ValueError("ok result cannot carry an error")
-        if not self._is_ok and self._error is None:
-            raise ValueError("err result must carry an error")
-
-    def is_ok(self) -> bool:
+    def is_ok(self):
         return self._is_ok
 
-    def is_err(self) -> bool:
+    def is_err(self):
         return not self._is_ok
 
-    def unwrap(self) -> T:
+    def unwrap(self):
         if not self._is_ok:
-            raise ValueError(f"called unwrap() on an err result: {self._error}")
-        return cast(T, self._value)
+            msg = self._error.message if self._error else "unknown error"
+            raise ValueError("unwrap() called on Err: " + msg)
+        return self._value
 
-    def unwrap_err(self) -> MosaabError:
+    def unwrap_err(self):
         if self._is_ok:
-            raise ValueError("called unwrap_err() on an ok result")
-        if self._error is None:
-            raise ValueError("err result is missing its MosaabError")
+            raise ValueError("unwrap_err() called on Ok")
         return self._error
 
 
-def ok(value: T) -> Result[T]:
-    """Wrap a successful value in an ok Result."""
-    return Result(_value=value, _error=None, _is_ok=True)
+def ok(value):
+    return Result(_value=value, _is_ok=True)
 
 
-def err(code: ErrorCode, message: str, **kwargs: Any) -> Result[Any]:
-    """Wrap a MosaabError built from code, message, and envelope kwargs."""
-    error = MosaabError(code=code, message=message, **kwargs)
-    return Result(_value=None, _error=error, _is_ok=False)
+def err(code, message, **kwargs):
+    return Result(_error=MosaabError(code=code, message=message, **kwargs), _is_ok=False)
