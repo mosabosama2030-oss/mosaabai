@@ -1,12 +1,15 @@
 """Tool interface: the contract every executable tool implements.
 
-Tools are the agent's hands: the cognitive loop's Execute stage dispatches
-a planned action to a registered tool and observes the returned
-ToolResult, while the planner reads tool schemas to know what is callable.
+Improvements over v0.1:
+  - Canonical tool identity (tool_id) independent of display name
+  - Identity is derived from name + version + schema fingerprint
+  - Prevents same-name substitution attacks (I-005 / F-002)
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
@@ -14,13 +17,6 @@ from typing import Any
 
 @dataclass
 class ToolResult:
-    """Outcome of a single tool execution.
-
-    Tools report expected failures (bad input, domain errors) as
-    unsuccessful results rather than raising, so the loop can observe the
-    failure and replan instead of crashing.
-    """
-
     success: bool
     output: Any = None
     error: str | None = None
@@ -28,51 +24,49 @@ class ToolResult:
 
     @classmethod
     def ok(cls, output: Any = None, metadata: dict[str, Any] | None = None) -> ToolResult:
-        """Build a successful result."""
         return cls(success=True, output=output, metadata=dict(metadata or {}))
 
     @classmethod
     def failed(cls, error: str, metadata: dict[str, Any] | None = None) -> ToolResult:
-        """Build a failed result."""
         return cls(success=False, error=error, metadata=dict(metadata or {}))
 
 
+def compute_tool_id(name: str, version: str, parameters: dict[str, Any]) -> str:
+    schema = json.dumps(parameters, sort_keys=True, separators=(",", ":"), default=str)
+    raw = f"{name.strip().lower()}|{version.strip()}|{schema}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+
 class Tool(ABC):
-    """Base class for all tools.
-
-    Subclasses set `name`, `description`, and `parameters` (JSON-Schema
-    style, matching LLM tool declarations) as class attributes and
-    implement `execute`.
-    """
-
     name: str = ""
+    version: str = "1.0.0"
     description: str = ""
     parameters: dict[str, Any] = {}
 
+    @property
+    def tool_id(self) -> str:
+        return compute_tool_id(self.name, self.version, self.parameters)
+
     @abstractmethod
     async def execute(self, **kwargs: Any) -> ToolResult:
-        """Run the tool with the given arguments.
-
-        `execute` may be called directly (bypassing the registry), so
-        implementations should validate their own input and report
-        expected failures as unsuccessful ToolResults.
-        """
         raise NotImplementedError
 
     @property
     def required_parameters(self) -> list[str]:
-        """Names of parameters the caller must provide."""
         return list(self.parameters.get("required", []))
 
     @property
     def parameter_names(self) -> list[str]:
-        """Names of all declared parameters."""
         return list(self.parameters.get("properties", {}))
 
     def to_schema(self) -> dict[str, Any]:
-        """Return the LLM-facing declaration of this tool."""
         return {
             "name": self.name,
+            "version": self.version,
+            "tool_id": self.tool_id,
             "description": self.description,
             "parameters": self.parameters,
         }
+
+    def identity_tuple(self) -> tuple[str, str, str]:
+        return (self.tool_id, self.name, self.version)
