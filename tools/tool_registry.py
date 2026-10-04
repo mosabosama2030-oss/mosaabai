@@ -1,4 +1,11 @@
-"""Tool registry: discovery, validation, and dispatch of tools."""
+"""DEPRECATED: This module is superseded by tools/tool_environment.py.
+
+Reason: Global singleton violates I-005 (Monotonic Delegation).
+See EO-003 and Canonical Architecture Section 7.2.
+
+This module is retained for backward compatibility and will be
+removed in P0.5.4.
+"""
 
 from __future__ import annotations
 
