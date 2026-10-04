@@ -1,4 +1,4 @@
-"""Bounded, JSON-safe error envelope for MosaabAI."""
+"""Bounded, JSON-safe error envelope for MosaabAI (EO-005 G3 v2)."""
 
 from __future__ import annotations
 
@@ -43,22 +43,56 @@ def _serialize_cause(cause):
 
 
 def _bounded_context(context):
+    """Silent, deterministic, JSON-safe. Never raises.
+
+    - Coerces non-string values to str (JSON-safe baseline preserved).
+    - Bounds key count deterministically (sorted).
+    - Truncates oversized string values.
+    - Handles malformed context (non-dict) silently.
+    """
     flags = []
-    bounded = {}
-    if len(context) > MAX_CONTEXT_KEYS:
-        keys = sorted(context.keys())[:MAX_CONTEXT_KEYS]
+
+    if not isinstance(context, dict):
+        try:
+            context = dict(context)
+        except (TypeError, ValueError):
+            return {"_malformed": str(context)[:MAX_CONTEXT_VALUE_CHARS]}, ["context_malformed"]
+
+    try:
+        all_keys = list(context.keys())
+    except (AttributeError, TypeError):
+        return {"_malformed": str(context)[:MAX_CONTEXT_VALUE_CHARS]}, ["context_malformed"]
+
+    try:
+        sorted_keys = sorted(all_keys)
+    except TypeError:
+        sorted_keys = sorted(all_keys, key=lambda k: str(k))
+
+    if len(sorted_keys) > MAX_CONTEXT_KEYS:
+        sorted_keys = sorted_keys[:MAX_CONTEXT_KEYS]
         flags.append("context_keys")
-    else:
-        keys = sorted(context.keys())
-    for key in keys:
-        value = context[key]
-        if isinstance(value, str):
-            new_val, trunc = _truncate_string(value, MAX_CONTEXT_VALUE_CHARS)
-            if trunc:
-                if "context_value" not in flags:
-                    flags.append("context_value")
-                value = new_val
-        bounded[key] = value
+
+    bounded = {}
+    for key in sorted_keys:
+        try:
+            value = context[key]
+        except (KeyError, TypeError):
+            continue
+
+        if not isinstance(value, str):
+            try:
+                value = str(value)
+            except Exception:
+                value = "<unserializable>"
+
+        new_val, trunc = _truncate_string(value, MAX_CONTEXT_VALUE_CHARS)
+        if trunc:
+            if "context_value" not in flags:
+                flags.append("context_value")
+            value = new_val
+
+        bounded[str(key)] = value
+
     return bounded, flags
 
 
@@ -69,21 +103,26 @@ class MosaabError:
     version: str = "1.0.0"
     fatal: bool = False
     retryable: bool = False
-    context: dict = None
-    trace_id: str = None
-    cause: Exception = None
+    context: Any = None
+    trace_id: Any = None
+    cause: Any = None
     _truncation_flags: tuple = field(default_factory=tuple, compare=False, repr=False)
 
     def __post_init__(self):
         flags = []
+
         new_msg, msg_trunc = _truncate_string(self.message, MAX_MESSAGE_CHARS)
         if msg_trunc:
             flags.append("message")
             object.__setattr__(self, "message", new_msg)
+
         if self.context is not None:
             bounded, ctx_flags = _bounded_context(self.context)
             object.__setattr__(self, "context", bounded)
-            flags.extend(ctx_flags)
+            for f in ctx_flags:
+                if f not in flags:
+                    flags.append(f)
+
         if flags:
             object.__setattr__(self, "_truncation_flags", tuple(flags))
 
@@ -106,6 +145,12 @@ class Result(Generic[T]):
     _value: Any = None
     _error: Any = None
     _is_ok: bool = True
+
+    def __post_init__(self):
+        if self._is_ok and self._error is not None:
+            raise ValueError("Ok result cannot carry an error")
+        if not self._is_ok and self._error is None:
+            raise ValueError("Err result must carry an error")
 
     def is_ok(self):
         return self._is_ok

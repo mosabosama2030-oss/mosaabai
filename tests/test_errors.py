@@ -205,3 +205,36 @@ def test_truncation_deterministic() -> None:
     assert e1.message == e2.message
     assert e1.context == e2.context
     assert e1._truncation_flags == e2._truncation_flags
+
+
+def test_context_malformed_handled_silently() -> None:
+    err_obj = MosaabError(code=ErrorCode.tool_failure, message="ok", context="not-a-dict")
+    assert err_obj.context is not None
+    assert "context_malformed" in err_obj._truncation_flags
+
+
+def test_context_non_string_coerced_to_str() -> None:
+    err_obj = MosaabError(
+        code=ErrorCode.tool_failure,
+        message="ok",
+        context={"num": 42, "lst": [1, 2, 3]},
+    )
+    assert err_obj.context is not None
+    assert isinstance(err_obj.context["num"], str)
+    assert isinstance(err_obj.context["lst"], str)
+
+
+def test_result_ok_cannot_carry_error() -> None:
+    try:
+        Result(_is_ok=True, _error=MosaabError(code=ErrorCode.tool_failure, message="x"))
+        raise AssertionError("Expected ValueError for Ok with error")
+    except ValueError:
+        pass
+
+
+def test_result_err_must_carry_error() -> None:
+    try:
+        Result(_is_ok=False, _error=None)
+        raise AssertionError("Expected ValueError for Err without error")
+    except ValueError:
+        pass
