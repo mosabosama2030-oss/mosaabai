@@ -7,7 +7,7 @@ import types
 import pytest
 
 from core.security import (
-    ASTSecurityViolation,
+    ASTSecurityViolationError,
     RegistryImmutableError,
     SecurityDowngradeError,
     StatefulToolError,
@@ -30,7 +30,8 @@ def test_legacy_tool_registry_removed_or_unreachable() -> None:
     import tools.spawn as spawn_mod
     import tools.trusted_registry as tr
 
-    src = open(spawn_mod.__file__).read() + open(tr.__file__).read()
+    with open(spawn_mod.__file__) as f1, open(tr.__file__) as f2:
+        src = f1.read() + f2.read()
     assert "from tools.tool_registry" not in src
     assert hasattr(tr, "TrustedToolRegistry")
     with pytest.raises(ImportError):
@@ -118,7 +119,7 @@ def test_ast_whitelist_blocks_attribute_access() -> None:
     def bad(x):
         return x.__class__
 
-    with pytest.raises(ASTSecurityViolation):
+    with pytest.raises(ASTSecurityViolationError):
         reg.register(name="bad", version="1.0.0", description="bad", parameters={}, fn=bad)
 
 
@@ -128,7 +129,7 @@ def test_ast_whitelist_blocks_aliased_eval_call() -> None:
     def bad(x):
         return eval("1+1")  # noqa: S307
 
-    with pytest.raises(ASTSecurityViolation):
+    with pytest.raises(ASTSecurityViolationError):
         reg.register(name="bad", version="1.0.0", description="bad", parameters={}, fn=bad)
 
 

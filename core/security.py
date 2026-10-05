@@ -10,13 +10,29 @@ import types
 from collections.abc import Callable
 from typing import Any
 
-from core.security_exceptions import (
-    ASTSecurityViolation,
+from core.security_exceptions import (  # noqa: F401
+    ASTSecurityViolationError,
     RegistryImmutableError,
     SecurityDowngradeError,
     StatefulToolError,
     ToolExecutionError,
 )
+
+# Re-export for callers/tests
+__all__ = [
+    "ASTWhitelistVisitor",
+    "analyze_function_ast",
+    "assert_pure_code_object",
+    "compute_spec_digest",
+    "frozen_builtins",
+    "make_sandbox_globals",
+    "execute_in_sandbox",
+    "ASTSecurityViolationError",
+    "RegistryImmutableError",
+    "SecurityDowngradeError",
+    "StatefulToolError",
+    "ToolExecutionError",
+]
 
 _SAFE_BUILTIN_NAMES: frozenset[str] = frozenset(
     {
@@ -57,21 +73,21 @@ class ASTWhitelistVisitor(ast.NodeVisitor):
     def generic_visit(self, node: ast.AST) -> None:
         t = type(node)
         if t in _FORBIDDEN_AST_TYPES:
-            raise ASTSecurityViolation(f"forbidden AST node: {t.__name__}")
+            raise ASTSecurityViolationError(f"forbidden AST node: {t.__name__}")
         if t not in _ALLOWED_AST_TYPES and not isinstance(
             node, (ast.operator, ast.cmpop, ast.unaryop, ast.boolop, ast.expr_context)
         ):
-            raise ASTSecurityViolation(f"non-whitelisted AST node: {t.__name__}")
+            raise ASTSecurityViolationError(f"non-whitelisted AST node: {t.__name__}")
         super().generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
         if not isinstance(node.func, ast.Name):
-            raise ASTSecurityViolation("Call target must be ast.Name (no attributes)")
+            raise ASTSecurityViolationError("Call target must be ast.Name (no attributes)")
         name = node.func.id
         if name in _FORBIDDEN_CALL_NAMES:
-            raise ASTSecurityViolation(f"forbidden call: {name}")
+            raise ASTSecurityViolationError(f"forbidden call: {name}")
         if name not in _SAFE_BUILTIN_NAMES:
-            raise ASTSecurityViolation(f"call not in pure-builtin whitelist: {name}")
+            raise ASTSecurityViolationError(f"call not in pure-builtin whitelist: {name}")
         self.generic_visit(node)
 
 
@@ -79,12 +95,12 @@ def analyze_function_ast(fn: Callable[..., Any]) -> None:
     try:
         src = inspect.getsource(fn)
     except (OSError, TypeError) as exc:
-        raise ASTSecurityViolation(f"cannot obtain source for AST analysis: {exc}") from exc
+        raise ASTSecurityViolationError(f"cannot obtain source for AST analysis: {exc}") from exc
     src = textwrap.dedent(src)
     try:
         tree = ast.parse(src)
     except SyntaxError as exc:
-        raise ASTSecurityViolation(f"AST parse failed: {exc}") from exc
+        raise ASTSecurityViolationError(f"AST parse failed: {exc}") from exc
     ASTWhitelistVisitor().visit(tree)
 
 

@@ -67,7 +67,7 @@ class CognitiveLoop:
                 await self._run_stage(stage, task, result)
             except Exception as exc:
                 from core.security import (
-                    ASTSecurityViolation,
+                    ASTSecurityViolationError,
                     RegistryImmutableError,
                     SecurityDowngradeError,
                     StatefulToolError,
@@ -77,7 +77,7 @@ class CognitiveLoop:
                     exc,
                     (
                         SecurityDowngradeError,
-                        ASTSecurityViolation,
+                        ASTSecurityViolationError,
                         StatefulToolError,
                         RegistryImmutableError,
                     ),

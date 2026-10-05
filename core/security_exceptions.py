@@ -7,7 +7,7 @@ class SecurityDowngradeError(Exception):
     """Hard security failure: missing tool_id, name-based fallback, etc."""
 
 
-class ASTSecurityViolation(Exception):
+class ASTSecurityViolationError(Exception):
     """AST whitelist violation (CRIT-03)."""
 
 
