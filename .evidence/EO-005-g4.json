@@ -1,9 +1,10 @@
 {
   "task_id": "G4",
   "base_sha": "008744f30d03c73dac6cc4d27ec44f1719ae330f",
-  "head_sha": "87cdc4d2aa4aa45d5e81c8325285800dd0709a57",
-  "test_results": "16 passed",
+  "head_sha": "dd2a93ff031a360174d90738c2e07c3db4c50c30",
+  "test_results": "25 passed (G4b+G5 targeted subset local); full suite via CI",
   "lint_results": "clean",
   "audit_token": null,
-  "timestamp": "2026-10-05T12:01:00Z"
+  "timestamp": "2026-10-05T12:21:00Z",
+  "fixes": ["F-083", "F-084", "F-085", "F-086", "F-087", "F-088"]
 }
