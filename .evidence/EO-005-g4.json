@@ -1,0 +1,23 @@
+{
+  "task_id": "EO-005-g4",
+  "base_sha": "a12e63807141450146994b026a099ebd0a0a2e5e",
+  "head_sha": "70422b8c9dd086e33e32cd52fb4353c8750dcbaf",
+  "changed_files": [
+    "tools/tool_interface.py",
+    "tools/tool_environment.py",
+    "tools/tool_registry.py",
+    "tests/test_tool_identity.py"
+  ],
+  "agent": "grok",
+  "provider": "xai",
+  "model": "grok-4",
+  "tests_added": 12,
+  "tests_run": "pytest -v tests/test_tool_identity.py",
+  "test_result": "12 passed",
+  "full_suite_result": "NOT_EXECUTED",
+  "lint_result": "NOT_AVAILABLE",
+  "invariant_results": {"I-005": "PASS", "I-008": "PASS"},
+  "security_result": "PASS",
+  "timestamp": "2026-10-05T07:34:00Z",
+  "notes": "Evidence file committed per Council amendment. ToolRegistry kept for BC."
+}
