@@ -1,10 +1,16 @@
-"""EO-005 G4 — cryptographic identity, AST whitelist, frozen builtins."""
+"""EO-005 G4 — cryptographic identity, AST whitelist, frozen builtins.
+
+Fix Sprint 2:
+  F-083 sandbox actually bound
+  F-084 canonical JSON digest + co_consts/co_names/co_varnames
+"""
 
 from __future__ import annotations
 
 import ast
 import hashlib
 import inspect
+import json
 import textwrap
 import types
 from collections.abc import Callable
@@ -18,7 +24,6 @@ from core.security_exceptions import (  # noqa: F401
     ToolExecutionError,
 )
 
-# Re-export for callers/tests
 __all__ = [
     "ASTWhitelistVisitor",
     "analyze_function_ast",
@@ -114,6 +119,17 @@ def assert_pure_code_object(fn: Callable[..., Any]) -> None:
         raise StatefulToolError(f"co_cellvars not empty: {code.co_cellvars}")
 
 
+def _code_fingerprint(code: types.CodeType) -> dict[str, Any]:
+    return {
+        "co_code": code.co_code.hex(),
+        "co_consts": list(code.co_consts),
+        "co_names": list(code.co_names),
+        "co_varnames": list(code.co_varnames),
+        "co_argcount": code.co_argcount,
+        "co_flags": code.co_flags,
+    }
+
+
 def compute_spec_digest(
     name: str,
     version: str,
@@ -121,17 +137,17 @@ def compute_spec_digest(
     parameters: dict[str, Any],
     fn: Callable[..., Any],
 ) -> str:
+    """SHA-256 of canonical JSON metadata + code fingerprint (F-084)."""
     code = fn.__code__
-    meta = f"{name}|{version}|{description}|{parameters!r}"
-    bytecode = code.co_code
-    try:
-        src = textwrap.dedent(inspect.getsource(fn))
-        tree = ast.parse(src)
-        ast_fp = ast.dump(tree, annotate_fields=True)
-    except Exception:  # noqa: BLE001
-        ast_fp = ""
-    blob = meta.encode("utf-8") + b"\0" + bytecode + b"\0" + ast_fp.encode("utf-8")
-    return hashlib.sha256(blob).hexdigest()
+    meta = {
+        "name": name,
+        "version": version,
+        "description": description,
+        "parameters": parameters,
+        "code": _code_fingerprint(code),
+    }
+    canonical = json.dumps(meta, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def frozen_builtins() -> types.MappingProxyType[str, Any]:
@@ -152,7 +168,21 @@ def make_sandbox_globals() -> dict[str, Any]:
 
 
 def execute_in_sandbox(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-    g = make_sandbox_globals()
-    if not isinstance(g["__builtins__"], types.MappingProxyType):
+    """Execute *fn* bound to sanitized globals (F-083)."""
+    sandbox = make_sandbox_globals()
+    if not isinstance(sandbox["__builtins__"], types.MappingProxyType):
         raise SecurityDowngradeError("__builtins__ is not frozen")
-    return fn(*args, **kwargs)
+
+    code = fn.__code__
+    if code.co_freevars or code.co_cellvars:
+        raise StatefulToolError("cannot sandbox function with free/cell vars")
+
+    sandboxed = types.FunctionType(
+        code,
+        sandbox,
+        name=fn.__name__,
+        argdefs=fn.__defaults__,
+        closure=None,
+    )
+    sandboxed.__kwdefaults__ = fn.__kwdefaults__
+    return sandboxed(*args, **kwargs)
