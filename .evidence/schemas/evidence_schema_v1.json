@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MosaabAI Evidence Artifact v1",
+  "type": "object",
+  "required": ["task_id", "base_sha", "head_sha", "test_results", "lint_results", "audit_token", "timestamp"],
+  "properties": {
+    "task_id": { "type": "string" },
+    "base_sha": { "type": "string" },
+    "head_sha": { "type": "string" },
+    "test_results": { "type": "string" },
+    "lint_results": { "type": "string" },
+    "audit_token": { "type": ["string", "null"] },
+    "timestamp": { "type": "string" }
+  },
+  "additionalProperties": true
+}
