@@ -25,6 +25,8 @@ class ErrorCode(Enum):
     timeout = "timeout"
     external_dependency_failure = "external_dependency_failure"
     verification_failure = "verification_failure"
+    capability_violation = "capability_violation"
+    identity_failure = "identity_failure"
 
 
 def _safe_str(value: Any) -> str:
@@ -117,7 +119,7 @@ def _bounded_context(context: Any) -> tuple[dict[str, str], list[str]]:
 class MosaabError:
     code: ErrorCode
     message: str
-    version: str = "1.0.0"
+    version: str = "1.1.0"
     fatal: bool = False
     retryable: bool = False
     context: dict[str, Any] | None = None
