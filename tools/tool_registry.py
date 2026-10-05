@@ -1,10 +1,8 @@
-"""DEPRECATED: This module is superseded by tools/tool_environment.py.
+"""TrustedToolRegistry — canonical tool identity registry (EO-005 G4).
 
-Reason: Global singleton violates I-005 (Monotonic Delegation).
-See EO-003 and Canonical Architecture Section 7.2.
-
-This module is retained for backward compatibility and will be
-removed in P0.5.4.
+Also retains a thin ToolRegistry for backward-compatible dispatch used by
+existing tests (name-based catalog). New identity enforcement uses
+TrustedToolRegistry only.
 """
 
 from __future__ import annotations
@@ -24,14 +22,73 @@ _JSON_TYPES: dict[str, type | tuple[type, ...]] = {
 }
 
 
-class ToolRegistry:
-    """Central catalog of tools available to the cognitive loop.
+class TrustedToolRegistry:
+    """Maps tool_id -> Tool. Source of truth for known-good tool identities.
 
-    The planner reads `schemas()` to learn what is callable; the Execute
-    stage dispatches through `call()`. The registry validates arguments
-    against each tool's parameter schema and converts execution errors
-    into failed ToolResults so a bad call never crashes the loop.
+    Immutable mapping: once a tool_id is registered, it cannot be reassigned
+    to a different implementation.
     """
+
+    def __init__(self) -> None:
+        self._by_id: dict[str, Tool] = {}
+        self._by_name: dict[str, str] = {}  # name -> tool_id
+
+    def register(self, tool: Tool) -> str:
+        """Register *tool* and return its tool_id.
+
+        Rejects missing identity, forged ids that do not match compute,
+        and reassignment of an existing tool_id to a different tool object.
+        """
+        if tool is None:
+            raise ValueError("tool is required")
+        try:
+            tid = tool.tool_id
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError(f"tool has no valid tool_id: {exc}") from exc
+        if not tid or not isinstance(tid, str):
+            raise ValueError("tool must define a non-empty tool_id")
+        expected = tool.tool_id
+        if tid != expected:
+            raise ValueError(f"forged tool_id: got {tid!r}, expected {expected!r}")
+
+        existing = self._by_id.get(tid)
+        if existing is not None and existing is not tool:
+            if existing.identity_tuple() != tool.identity_tuple():
+                raise ValueError(
+                    f"tool_id {tid[:12]}… already registered to a different implementation"
+                )
+            return tid
+
+        prior_id = self._by_name.get(tool.name)
+        if prior_id is not None and prior_id != tid:
+            raise ValueError(
+                f"tool name {tool.name!r} already registered with different tool_id "
+                f"(possible substitution)"
+            )
+
+        self._by_id[tid] = tool
+        self._by_name[tool.name] = tid
+        return tid
+
+    def get_by_id(self, tool_id: str) -> Tool | None:
+        return self._by_id.get(tool_id)
+
+    def get_by_name(self, name: str) -> Tool | None:
+        tid = self._by_name.get(name)
+        if tid is None:
+            return None
+        return self._by_id.get(tid)
+
+    def is_trusted(self, tool: Tool) -> bool:
+        registered = self._by_id.get(tool.tool_id)
+        return registered is not None and registered.tool_id == tool.tool_id
+
+    def list_all(self) -> list[Tool]:
+        return list(self._by_id.values())
+
+
+class ToolRegistry:
+    """Central catalog of tools by name (legacy dispatch helper)."""
 
     def __init__(self, tools: Iterable[Tool] | None = None) -> None:
         self._tools: dict[str, Tool] = {}
@@ -39,7 +96,6 @@ class ToolRegistry:
             self.register(tool)
 
     def register(self, tool: Tool) -> None:
-        """Add a tool. Raises ValueError on empty or duplicate names."""
         if not tool.name or not tool.name.strip():
             raise ValueError("tool must define a non-empty name")
         if tool.name in self._tools:
@@ -47,23 +103,18 @@ class ToolRegistry:
         self._tools[tool.name] = tool
 
     def unregister(self, name: str) -> Tool:
-        """Remove a tool and return it. Raises KeyError if absent."""
         return self._tools.pop(name)
 
     def get(self, name: str) -> Tool:
-        """Look up a tool by name. Raises KeyError if absent."""
         return self._tools[name]
 
     def has(self, name: str) -> bool:
-        """Return whether a tool is registered."""
         return name in self._tools
 
     def names(self) -> list[str]:
-        """Return registered tool names in registration order."""
         return list(self._tools)
 
     def schemas(self) -> list[dict[str, Any]]:
-        """Return LLM-facing declarations for every registered tool."""
         return [tool.to_schema() for tool in self._tools.values()]
 
     def __len__(self) -> int:
@@ -73,12 +124,6 @@ class ToolRegistry:
         return name in self._tools
 
     async def call(self, name: str, **arguments: Any) -> ToolResult:
-        """Dispatch a call to a registered tool.
-
-        Unknown tools, invalid arguments, and execution errors are
-        reported as failed ToolResults (with `metadata["tool"]` set)
-        rather than raised.
-        """
         tool = self._tools.get(name)
         if tool is None:
             return ToolResult.failed(f"unknown tool: {name}", metadata={"tool": name})
@@ -89,7 +134,7 @@ class ToolRegistry:
 
         try:
             result = await tool.execute(**arguments)
-        except Exception as exc:  # noqa: BLE001 - a broken tool must not crash the loop
+        except Exception as exc:  # noqa: BLE001
             message = f"tool '{name}' raised {type(exc).__name__}: {exc}"
             return ToolResult.failed(message, metadata={"tool": name})
 
@@ -103,10 +148,6 @@ class ToolRegistry:
 
     @staticmethod
     def _validate(tool: Tool, arguments: dict[str, Any]) -> str | None:
-        """Check arguments against the tool's schema.
-
-        Returns a human-readable error message, or None if valid.
-        """
         properties = tool.parameters.get("properties", {})
         required = tool.parameters.get("required", [])
 
