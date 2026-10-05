@@ -1,16 +1,25 @@
-"""Tests for the Write-Ahead Log (WAL) — Phase P0.5.0-A0.1."""
+"""Tests for the Write-Ahead Log (WAL) — Phase P0.5.0-A0.1 + EO-005 G2."""
 
 from __future__ import annotations
 
+import contextlib
 import json
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
+
+import pytest
 
 from core.wal import (
+    MAX_ERROR_BYTES,
+    MAX_INTENT_BYTES,
+    MAX_RESULT_BYTES,
     IntentStatus,
     WriteAheadLog,
+    _bound_dict,
+    _bound_error,
     idempotency_key_generator,
 )
 from core.wal import WALEntry as Entry
@@ -20,12 +29,6 @@ EYE, A_ID = "e1", "a1"
 
 
 def _entry(status: str = "pending", **overrides) -> Entry:
-    """Build a WALEntry with a default base and allow overrides.
-
-    The explicit 'status' parameter is applied on top of the default
-    base, then any caller-provided overrides, then the status is
-    normalised to the IntentStatus enum before construction.
-    """
     base = {
         "entry_id": EYE,
         "action_id": A_ID,
@@ -35,20 +38,13 @@ def _entry(status: str = "pending", **overrides) -> Entry:
         "created_at": NOW,
         "updated_at": NOW,
     }
-    # Apply the explicit 'status' parameter (binds to the parameter,
-    # not **overrides, so it is not automatically applied).
     base["status"] = status
-    # Apply any caller-provided overrides.
     base.update(overrides)
-    # Normalise the status field through the enum so the model validates.
     if "status" in base:
         base["status"] = IntentStatus(base["status"])
     return Entry.create(**base)
 
 
-# ---------------------------------------------------------------------------
-# 1. append / read
-# ---------------------------------------------------------------------------
 def test_append_and_read_single(tmp_path: Path) -> None:
     wal = WriteAheadLog(tmp_path / "wal.jsonl")
     entry = _entry()
@@ -147,7 +143,6 @@ def test_idempotency_key_determinism() -> None:
 
 
 def _canonical_json(value: Any) -> str:
-    """Serialise *value* to a canonical, sorted-key, stable form."""
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
@@ -177,7 +172,6 @@ def test_compact(tmp_path: Path) -> None:
 
     after = wal.all()
     assert len(after) == 2
-    # Compact keeps the most recent (largest updated_at) finished entries.
     assert [e.entry_id for e in after] == ["e4", "e3"]
 
 
@@ -191,7 +185,7 @@ def test_file_format_is_jsonl(tmp_path: Path) -> None:
     for line in lines:
         assert line.startswith("{")
         assert line.endswith("}")
-        _ = __import__("json").loads(line)  # must be valid, single-line JSON
+        _ = json.loads(line)
 
 
 def test_concurrent_append(tmp_path: Path) -> None:
@@ -217,3 +211,181 @@ def test_concurrent_append(tmp_path: Path) -> None:
 
     assert len(results) == num_threads
     assert len(wal.all()) == num_threads
+
+
+def test_wal_uses_os_fsync(tmp_path: Path) -> None:
+    wal = WriteAheadLog(tmp_path / "wal.jsonl")
+    with patch("core.wal.os.fsync") as mock_fsync:
+        wal.append(_entry())
+        assert mock_fsync.called
+        assert mock_fsync.call_count >= 1
+
+
+def test_wal_fsyncs_parent_directory(tmp_path: Path) -> None:
+    wal = WriteAheadLog(tmp_path / "wal.jsonl")
+    calls: list[int] = []
+
+    real_fsync = __import__("os").fsync
+
+    def tracking_fsync(fd: int) -> None:
+        calls.append(fd)
+        with contextlib.suppress(OSError):
+            real_fsync(fd)
+
+    with patch("core.wal.os.fsync", side_effect=tracking_fsync):
+        wal.append(_entry())
+
+    assert len(calls) >= 2  # file + directory
+
+
+def test_wal_survives_torn_write(tmp_path: Path) -> None:
+    """Simulate crash after partial tmp write: durable file remains previous state."""
+    path = tmp_path / "wal.jsonl"
+    wal = WriteAheadLog(path)
+    wal.append(_entry(entry_id="durable-1"))
+    assert len(wal.all()) == 1
+
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text("{broken", encoding="utf-8")
+    recovered = WriteAheadLog(path)
+    assert [e.entry_id for e in recovered.all()] == ["durable-1"]
+
+
+def test_wal_directory_fsync_supported_on_termux(tmp_path: Path) -> None:
+    """Preflight: directory fsync either succeeds or logs explicit warning (not silent)."""
+    wal = WriteAheadLog(tmp_path / "wal.jsonl")
+    call_count = {"n": 0}
+
+    def selective_fsync(fd: int) -> None:
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return  # file ok
+        raise OSError("dir fsync unsupported")
+
+    with (
+        patch("core.wal.os.fsync", side_effect=selective_fsync),
+        patch("core.wal.logger.warning") as mock_warn,
+    ):
+        wal.append(_entry(entry_id="termux-1"))
+    assert mock_warn.called
+    assert WriteAheadLog(tmp_path / "wal.jsonl").get("termux-1") is not None
+
+
+def test_wal_fsync_failure_is_not_silent(tmp_path: Path) -> None:
+    wal = WriteAheadLog(tmp_path / "wal.jsonl")
+
+    def fail_fsync(fd: int) -> None:
+        raise OSError("fsync failed")
+
+    with (
+        patch("core.wal.os.fsync", side_effect=fail_fsync),
+        pytest.raises(OSError, match="fsync failed"),
+    ):
+        wal.append(_entry())
+
+
+def test_wal_intent_truncated_silently() -> None:
+    huge = {"blob": "X" * (MAX_INTENT_BYTES + 10_000)}
+    entry = Entry.create(
+        entry_id="big-intent",
+        action_id="a",
+        idempotency_key="k",
+        intent=huge,
+        status=IntentStatus.PENDING,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    assert entry.intent.get("_truncated") is True
+    assert entry.intent.get("_original_bytes", 0) > MAX_INTENT_BYTES
+    assert "intent" in entry.truncation_flags
+    raw = json.dumps(entry.intent)
+    assert len(raw.encode("utf-8")) < MAX_INTENT_BYTES
+
+
+def test_wal_result_truncated_silently() -> None:
+    huge = {"blob": "Y" * (MAX_RESULT_BYTES + 10_000)}
+    entry = Entry.create(
+        entry_id="big-result",
+        action_id="a",
+        idempotency_key="k",
+        intent={"ok": True},
+        status=IntentStatus.COMPLETED,
+        created_at=NOW,
+        updated_at=NOW,
+        result=huge,
+    )
+    assert entry.result is not None
+    assert entry.result.get("_truncated") is True
+    assert "result" in entry.truncation_flags
+
+
+def test_wal_error_truncated_silently() -> None:
+    huge_err = "E" * (MAX_ERROR_BYTES + 5000)
+    entry = Entry.create(
+        entry_id="big-err",
+        action_id="a",
+        idempotency_key="k",
+        intent={"ok": True},
+        status=IntentStatus.FAILED,
+        created_at=NOW,
+        updated_at=NOW,
+        error=huge_err,
+    )
+    assert entry.error is not None
+    assert len(entry.error.encode("utf-8")) <= MAX_ERROR_BYTES
+    assert "error" in entry.truncation_flags
+
+
+def test_wal_truncation_flags_recorded() -> None:
+    entry = Entry.create(
+        entry_id="flags",
+        action_id="a",
+        idempotency_key="k",
+        intent={"blob": "I" * (MAX_INTENT_BYTES + 1000)},
+        status=IntentStatus.FAILED,
+        created_at=NOW,
+        updated_at=NOW,
+        result={"blob": "R" * (MAX_RESULT_BYTES + 1000)},
+        error="E" * (MAX_ERROR_BYTES + 1000),
+    )
+    assert set(entry.truncation_flags) >= {"intent", "result", "error"}
+
+
+def test_wal_never_raises_during_bounding() -> None:
+    adversarial = [
+        None,
+        "string",
+        123,
+        object(),
+        {"ok": "v"},
+        {"nested": {"x": list(range(100))}},
+    ]
+    for item in adversarial:
+        try:
+            _bound_dict(item if isinstance(item, dict) else {"_v": str(item)}, 100)
+            _bound_error(str(item) if item is not None else None)
+        except BaseException as exc:
+            raise AssertionError(f"bounding raised on {type(item)}: {exc}") from exc
+
+
+def test_wal_existing_tests_still_pass() -> None:
+    """Semantic smoke: small payloads round-trip unchanged."""
+    entry = Entry.create(
+        entry_id="smoke",
+        action_id="a",
+        idempotency_key="k",
+        intent={"task": "small"},
+        status=IntentStatus.PENDING,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    assert entry.intent == {"task": "small"}
+    assert entry.truncation_flags == ()
+
+
+def test_wal_compact_still_works(tmp_path: Path) -> None:
+    wal = WriteAheadLog(tmp_path / "wal.jsonl")
+    for i in range(5):
+        wal.append(_entry(entry_id=f"c{i}", status="completed", result={"i": i}))
+    wal.compact(max_entries=2)
+    assert len(wal.all()) == 2
