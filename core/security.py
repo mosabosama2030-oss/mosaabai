@@ -10,6 +10,14 @@ import types
 from collections.abc import Callable
 from typing import Any
 
+from core.security_exceptions import (
+    ASTSecurityViolation,
+    RegistryImmutableError,
+    SecurityDowngradeError,
+    StatefulToolError,
+    ToolExecutionError,
+)
+
 _SAFE_BUILTIN_NAMES: frozenset[str] = frozenset(
     {
         "abs", "all", "any", "bin", "bool", "dict", "float", "int", "len", "list",
@@ -46,11 +54,7 @@ _FORBIDDEN_AST_TYPES: frozenset[type] = frozenset(
 
 
 class ASTWhitelistVisitor(ast.NodeVisitor):
-    """Strict whitelist AST analyzer (CRIT-03)."""
-
     def generic_visit(self, node: ast.AST) -> None:
-        from core.errors import ASTSecurityViolation
-
         t = type(node)
         if t in _FORBIDDEN_AST_TYPES:
             raise ASTSecurityViolation(f"forbidden AST node: {t.__name__}")
@@ -61,8 +65,6 @@ class ASTWhitelistVisitor(ast.NodeVisitor):
         super().generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
-        from core.errors import ASTSecurityViolation
-
         if not isinstance(node.func, ast.Name):
             raise ASTSecurityViolation("Call target must be ast.Name (no attributes)")
         name = node.func.id
@@ -74,8 +76,6 @@ class ASTWhitelistVisitor(ast.NodeVisitor):
 
 
 def analyze_function_ast(fn: Callable[..., Any]) -> None:
-    from core.errors import ASTSecurityViolation
-
     try:
         src = inspect.getsource(fn)
     except (OSError, TypeError) as exc:
@@ -89,8 +89,6 @@ def analyze_function_ast(fn: Callable[..., Any]) -> None:
 
 
 def assert_pure_code_object(fn: Callable[..., Any]) -> None:
-    from core.errors import StatefulToolError
-
     code = getattr(fn, "__code__", None)
     if code is None:
         raise StatefulToolError("callable has no __code__")
@@ -107,7 +105,6 @@ def compute_spec_digest(
     parameters: dict[str, Any],
     fn: Callable[..., Any],
 ) -> str:
-    """SHA-256 of metadata + bytecode + AST dump (CRIT-02)."""
     code = fn.__code__
     meta = f"{name}|{version}|{description}|{parameters!r}"
     bytecode = code.co_code
@@ -140,9 +137,6 @@ def make_sandbox_globals() -> dict[str, Any]:
 
 def execute_in_sandbox(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
     g = make_sandbox_globals()
-    builtins_map = g["__builtins__"]
-    if not isinstance(builtins_map, types.MappingProxyType):
-        from core.errors import SecurityDowngradeError
-
+    if not isinstance(g["__builtins__"], types.MappingProxyType):
         raise SecurityDowngradeError("__builtins__ is not frozen")
     return fn(*args, **kwargs)
