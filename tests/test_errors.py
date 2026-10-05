@@ -23,11 +23,13 @@ EXPECTED_CODES = {
     "timeout",
     "external_dependency_failure",
     "verification_failure",
+    "capability_violation",
+    "identity_failure",
 }
 
 
 def test_error_code_exhaustiveness() -> None:
-    assert len(ErrorCode) == 11
+    assert len(ErrorCode) == 13
     assert {member.name for member in ErrorCode} == EXPECTED_CODES
     assert {member.value for member in ErrorCode} == EXPECTED_CODES
 
@@ -36,7 +38,7 @@ def test_mosaab_error_required_fields() -> None:
     error = MosaabError(ErrorCode.validation_failure, "invalid payload")
     assert error.code is ErrorCode.validation_failure
     assert error.message == "invalid payload"
-    assert error.version == "1.0.0"
+    assert error.version == "1.1.0"
     assert error.fatal is False
     assert error.retryable is False
     assert error.context is None
@@ -101,8 +103,6 @@ def test_mosaab_error_preserves_retryable() -> None:
     assert failure.retryable is True
     assert failure.to_dict()["retryable"] is True
     assert MosaabError(ErrorCode.tool_failure, "boom").retryable is False
-
-
 
 
 def test_mosaab_error_no_raw_exception_leak() -> None:
@@ -268,7 +268,7 @@ def test_context_evil_str_handled_silently() -> None:
 def test_context_evil_value_str_handled_silently() -> None:
     obj = MosaabError(code=ErrorCode.tool_failure, message="ok", context={"k": _EvilStr()})
     assert obj.context is not None
-    assert "<unrepresentable" in obj.context["k"] or "unrepresentable" in obj.context["k"]
+    assert "unrepresentable" in obj.context["k"]
 
 
 def test_message_evil_str_handled_silently() -> None:
