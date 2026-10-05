@@ -1,7 +1,7 @@
 """Core cognitive loop for MosaabAI.
 
-G5 / F-086: tool-call path via spawn_child; WAL append before execution;
-operational errors → continue; security errors → hard re-raise.
+F-086: explicit exception classification; operational → continue; security → hard raise;
+WAL CRITICAL must not silently fail.
 """
 
 from __future__ import annotations
@@ -20,6 +20,14 @@ from core.security_exceptions import (
     StatefulToolError,
     ToolExecutionError,
 )
+
+_SECURITY_ERRORS = (
+    SecurityDowngradeError,
+    ASTSecurityViolationError,
+    StatefulToolError,
+    RegistryImmutableError,
+)
+_OPERATIONAL_ERRORS = (ToolExecutionError, TimeoutError, OSError)
 
 
 class LoopStage(StrEnum):
@@ -53,13 +61,12 @@ class TaskResult:
     stages: list[LoopStage] = field(default_factory=list)
     error: str | None = None
     tool_output: Any = None
+    operational_errors: list[str] = field(default_factory=list)
     started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     finished_at: datetime | None = None
 
 
 class CognitiveLoop:
-    """Sovereign cognitive loop with optional TrustedToolRegistry + WAL."""
-
     def __init__(
         self,
         *,
@@ -85,25 +92,28 @@ class CognitiveLoop:
             result.stages.append(stage)
             try:
                 await self._run_stage(stage, task, result)
-            except (
-                SecurityDowngradeError,
-                ASTSecurityViolationError,
-                StatefulToolError,
-                RegistryImmutableError,
-            ):
-                if self._wal is not None:
-                    self._wal_critical(task, stage, "security_violation")
+            except _SECURITY_ERRORS:
+                self._wal_critical(task, stage, "security_violation")
                 raise
-            except (ToolExecutionError, TimeoutError, OSError) as exc:
-                result.error = f"{stage.value}: {exc}"
-                result.success = False
-                break
-            except Exception as exc:  # noqa: BLE001
-                result.error = f"{stage.value}: {exc}"
-                result.success = False
-                break
+            except _OPERATIONAL_ERRORS as exc:
+                msg = f"{stage.value}: {exc}"
+                result.operational_errors.append(msg)
+                result.error = msg
+                continue
+            except Exception as exc:
+                if isinstance(exc, _SECURITY_ERRORS):
+                    self._wal_critical(task, stage, "security_violation")
+                    raise
+                msg = f"{stage.value}: {exc}"
+                result.operational_errors.append(msg)
+                result.error = msg
+                continue
 
         result.finished_at = datetime.now(UTC)
+        if result.answer is not None and (
+            not result.operational_errors or result.tool_output is not None
+        ):
+            result.success = True
         return result
 
     async def _run_stage(self, stage: LoopStage, task: Task, result: TaskResult) -> None:
@@ -115,7 +125,6 @@ class CognitiveLoop:
                 result.answer = str(result.tool_output)
             else:
                 result.answer = f"[stub] task received: {task.description}"
-            result.success = True
 
     async def _execute_tool(self, task: Task, result: TaskResult) -> None:
         from tools.spawn import spawn_child
@@ -129,10 +138,7 @@ class CognitiveLoop:
                 entry_id=entry_id,
                 action_id=f"tool:{task.tool_id}",
                 idempotency_key=entry_id,
-                intent={
-                    "tool_id": task.tool_id,
-                    "description": task.description,
-                },
+                intent={"tool_id": task.tool_id, "description": task.description},
                 status=IntentStatus.PENDING,
                 created_at=now,
                 updated_at=now,
@@ -152,16 +158,9 @@ class CognitiveLoop:
                 from core.wal import IntentStatus
 
                 self._wal.update(
-                    entry_id,
-                    IntentStatus.COMPLETED,
-                    result={"output": str(output)},
+                    entry_id, IntentStatus.COMPLETED, result={"output": str(output)}
                 )
-        except (
-            SecurityDowngradeError,
-            ASTSecurityViolationError,
-            StatefulToolError,
-            RegistryImmutableError,
-        ):
+        except _SECURITY_ERRORS:
             if self._wal is not None:
                 from core.wal import IntentStatus
 
@@ -172,26 +171,30 @@ class CognitiveLoop:
                 from core.wal import IntentStatus
 
                 self._wal.update(entry_id, IntentStatus.FAILED, error=str(exc))
-            if isinstance(exc, (ToolExecutionError, TimeoutError, OSError)):
+            if isinstance(exc, _OPERATIONAL_ERRORS):
                 raise
             raise ToolExecutionError(str(exc)) from exc
 
     def _wal_critical(self, task: Task, stage: LoopStage, reason: str) -> None:
-        try:
-            from core.wal import IntentStatus, WALEntry
+        if self._wal is None:
+            return
+        from core.wal import IntentStatus, WALEntry
 
-            now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
-            eid = str(uuid.uuid4())
-            entry = WALEntry.create(
-                entry_id=eid,
-                action_id=f"CRITICAL:{stage.value}",
-                idempotency_key=eid,
-                intent={"reason": reason, "task": task.description},
-                status=IntentStatus.FAILED,
-                created_at=now,
-                updated_at=now,
-                error=reason,
-            )
+        now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        eid = str(uuid.uuid4())
+        entry = WALEntry.create(
+            entry_id=eid,
+            action_id=f"CRITICAL:{stage.value}",
+            idempotency_key=eid,
+            intent={"reason": reason, "task": task.description},
+            status=IntentStatus.FAILED,
+            created_at=now,
+            updated_at=now,
+            error=reason,
+        )
+        try:
             self._wal.append(entry)
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as wal_exc:
+            raise RuntimeError(
+                f"WAL CRITICAL append failed during security halt: {wal_exc}"
+            ) from wal_exc
