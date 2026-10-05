@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import threading
 from datetime import UTC, datetime
@@ -228,10 +229,8 @@ def test_wal_fsyncs_parent_directory(tmp_path: Path) -> None:
 
     def tracking_fsync(fd: int) -> None:
         calls.append(fd)
-        try:
+        with contextlib.suppress(OSError):
             real_fsync(fd)
-        except OSError:
-            pass
 
     with patch("core.wal.os.fsync", side_effect=tracking_fsync):
         wal.append(_entry())

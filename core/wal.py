@@ -5,6 +5,7 @@ EO-005 G2: durability via os.fsync + directory fsync; payload bounds (I-011).
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -258,10 +259,8 @@ class WriteAheadLog:
             )
         finally:
             if dir_fd is not None:
-                try:
+                with contextlib.suppress(OSError):
                     os.close(dir_fd)
-                except OSError:
-                    pass
 
     def _write_all(self, entries: list[WALEntry]) -> None:
         tmp = self._path.with_suffix(self._path.suffix + ".tmp")
