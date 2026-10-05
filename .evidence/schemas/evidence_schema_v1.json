@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mosaabai.local/schemas/evidence_schema_v1.json",
+  "title": "MosaabAI EO Evidence v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["task_id","base_sha","head_sha","changed_files","agent","provider","model_id","tests_run","test_result","lint_result","invariant_results","security_result","timestamp","audit_token"],
+  "properties": {
+    "task_id": {"type": "string", "pattern": "^EO-[A-Z0-9-]+$"},
+    "base_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "changed_files": {"type": "array", "items": {"type": "string"}},
+    "agent": {"type": "string", "minLength": 1},
+    "provider": {"type": "string", "minLength": 1},
+    "model_id": {"type": "string", "minLength": 1},
+    "tests_run": {"type": "array", "items": {"type": "string"}},
+    "test_result": {"enum": ["PASS", "FAIL", "UNKNOWN"]},
+    "lint_result": {"enum": ["PASS", "FAIL", "UNKNOWN"]},
+    "invariant_results": {"type": "object"},
+    "security_result": {"enum": ["PASS", "FAIL", "UNKNOWN"]},
+    "timestamp": {"type": "string", "format": "date-time"},
+    "audit_token": {"oneOf": [{"type": "null"}, {"type": "object", "additionalProperties": false, "required": ["signer","algorithm","key_fingerprint","signature"], "properties": {"signer": {"const": "Gemini"}, "algorithm": {"const": "GPG"}, "key_fingerprint": {"type": "string", "minLength": 16}, "signature": {"type": "string", "minLength": 1}}}]}
+  }
+}
