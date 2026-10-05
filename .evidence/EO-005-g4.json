@@ -1,10 +1,14 @@
 {
   "task_id": "G4",
   "base_sha": "008744f30d03c73dac6cc4d27ec44f1719ae330f",
-  "head_sha": "3573f0ddd60a2a768e0a9f4bab69992fd98f2869",
-  "test_results": "25 passed (G4b+G5 targeted subset local); full suite via CI",
+  "code_sha": "a71ea8007cde9f5e1b51e23f84adce6649f0a2af",
+  "head_sha": "a71ea8007cde9f5e1b51e23f84adce6649f0a2af",
+  "test_results": "29 passed targeted (G4b+G5+F-087 local)",
+  "full_suite_passed": 183,
+  "full_suite_python_versions": ["3.11", "3.12"],
   "lint_results": "clean",
   "audit_token": null,
-  "timestamp": "2026-10-05T12:21:00Z",
-  "fixes": ["F-083", "F-084", "F-085", "F-086", "F-087", "F-088"]
+  "timestamp": "2026-10-05T14:22:00Z",
+  "fixes": ["F-084", "F-085", "F-086", "F-087", "F-088", "F-089"],
+  "notes": "code_sha binds last code commit; evidence-only commits must not rebind"
 }
