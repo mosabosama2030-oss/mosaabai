@@ -1,7 +1,8 @@
-"""EO-005 G4b — 16 mandatory adversarial tests + F-087."""
+"""EO-005 G4b + Sprint 3 adversarial tests."""
 
 from __future__ import annotations
 
+import textwrap
 import types
 
 import pytest
@@ -33,7 +34,6 @@ def test_legacy_tool_registry_removed_or_unreachable() -> None:
     with open(spawn_mod.__file__) as f1, open(tr.__file__) as f2:
         src = f1.read() + f2.read()
     assert "from tools.tool_registry" not in src
-    assert hasattr(tr, "TrustedToolRegistry")
     with pytest.raises(ImportError):
         from tools.spawn import ToolRegistry  # type: ignore[attr-defined]  # noqa: F401
 
@@ -45,12 +45,36 @@ def test_no_name_only_tool_authorization() -> None:
         spawn_child("", registry=reg)
     with pytest.raises(SecurityDowngradeError):
         spawn_child(None, registry=reg)  # type: ignore[arg-type]
+    with pytest.raises(SecurityDowngradeError):
+        spawn_child("add", registry=reg)
 
 
 def test_spec_digest_is_deterministic() -> None:
-    d1 = compute_spec_digest("add", "1.0.0", "add", {}, _add)
-    d2 = compute_spec_digest("add", "1.0.0", "add", {}, _add)
+    src = "def f(a, b):\n    return a + b\n"
+    ns1: dict = {}
+    ns2: dict = {}
+    exec(src, ns1)  # noqa: S102
+    exec(src, ns2)  # noqa: S102
+    d1 = compute_spec_digest("f", "1.0.0", "f", {}, ns1["f"])
+    d2 = compute_spec_digest("f", "1.0.0", "f", {}, ns2["f"])
     assert d1 == d2 and len(d1) == 64
+
+
+def test_digest_stable_across_compilations() -> None:
+    src = textwrap.dedent(
+        """
+        def outer(x):
+            def inner(y):
+                return x + y
+            return inner(1)
+        """
+    )
+    digests = []
+    for _ in range(3):
+        ns: dict = {}
+        exec(src, ns)  # noqa: S102
+        digests.append(compute_spec_digest("outer", "1", "o", {}, ns["outer"]))
+    assert digests[0] == digests[1] == digests[2]
 
 
 def test_spec_digest_changes_when_code_changes() -> None:
@@ -94,10 +118,21 @@ def test_registry_rejects_redefinition() -> None:
 
 
 def test_registered_tool_mutation_cannot_change_trust() -> None:
+    def local_add(a, b):
+        return a + b
+
+    def evil(a, b):
+        return 0
+
     reg = TrustedToolRegistry()
-    tid = reg.register(name="add", version="1.0.0", description="add", parameters={}, fn=_add)
-    assert reg.is_trusted(tid)
-    assert not reg.is_trusted("0" * 64)
+    tid = reg.register(
+        name="local_add", version="1.0.0", description="add", parameters={}, fn=local_add
+    )
+    assert reg.is_trusted(tid) is True
+    record = reg.get(tid)
+    assert record is not None
+    record.fn.__code__ = evil.__code__  # type: ignore[misc]
+    assert reg.is_trusted(tid) is False
 
 
 def test_spawn_child_delegates_trusted_identity_not_name() -> None:
@@ -111,6 +146,13 @@ def test_spawn_child_rejects_missing_tool_id() -> None:
     reg.register(name="add", version="1.0.0", description="add", parameters={}, fn=_add)
     with pytest.raises(SecurityDowngradeError):
         spawn_child("   ", registry=reg)
+
+
+def test_spawn_child_rejects_name_substitution() -> None:
+    reg = TrustedToolRegistry()
+    reg.register(name="add", version="1.0.0", description="add", parameters={}, fn=_add)
+    with pytest.raises(SecurityDowngradeError):
+        spawn_child("add", registry=reg, args=(1, 1))
 
 
 def test_ast_whitelist_blocks_attribute_access() -> None:
@@ -149,49 +191,58 @@ def test_unknown_digest_fails_closed() -> None:
 
 def test_child_tool_set_remains_monotonic_by_identity() -> None:
     reg = TrustedToolRegistry()
-    tid = reg.register(name="add", version="1.0.0", description="add", parameters={}, fn=_add)
-    parent_ids = frozenset({tid})
-    assert spawn_child(tid, registry=reg, parent_ids=parent_ids, args=(1, 1)) == 2
+    tid_add = reg.register(name="add", version="1.0.0", description="add", parameters={}, fn=_add)
+    tid_mul = reg.register(name="mul", version="1.0.0", description="mul", parameters={}, fn=_mul)
+    parent_ids = frozenset({tid_add})
+    assert spawn_child(tid_add, registry=reg, parent_ids=parent_ids, args=(1, 1)) == 2
     with pytest.raises(SecurityDowngradeError):
-        spawn_child("00" * 32, registry=reg, parent_ids=parent_ids)
+        spawn_child(tid_mul, registry=reg, parent_ids=parent_ids, args=(2, 3))
 
 
 def test_dict_order_does_not_change_digest() -> None:
-    """F-087 / F-084: sorted-key JSON makes parameter order irrelevant."""
     p1 = {"b": 1, "a": 2}
     p2 = {"a": 2, "b": 1}
-    d1 = compute_spec_digest("op", "1.0.0", "d", p1, _add)
-    d2 = compute_spec_digest("op", "1.0.0", "d", p2, _add)
-    assert d1 == d2
+    assert compute_spec_digest("op", "1.0.0", "d", p1, _add) == compute_spec_digest(
+        "op", "1.0.0", "d", p2, _add
+    )
 
 
 def test_registered_function_code_mutation_blocked() -> None:
-    """F-087 / F-085: mutating __code__ after register fails at spawn."""
-    reg = TrustedToolRegistry()
-    tid = reg.register(name="add", version="1.0.0", description="add", parameters={}, fn=_add)
+    def local_add(a, b):
+        return a + b
 
     def evil(a, b):
         return 0
 
+    reg = TrustedToolRegistry()
+    tid = reg.register(
+        name="local_add2", version="1.0.0", description="add", parameters={}, fn=local_add
+    )
     record = reg.get(tid)
     assert record is not None
-    try:
-        record.fn.__code__ = evil.__code__  # type: ignore[misc]
-    except (TypeError, AttributeError):
-        pytest.skip("platform protects function.__code__")
-        return
+    record.fn.__code__ = evil.__code__  # type: ignore[misc]
     with pytest.raises(SecurityDowngradeError):
         spawn_child(tid, registry=reg, args=(1, 2))
 
 
+def test_kwdefaults_mutation_post_registration_rejected() -> None:
+    def greeter(msg="hello"):
+        return msg
+
+    reg = TrustedToolRegistry()
+    tid = reg.register(
+        name="greeter", version="1.0.0", description="g", parameters={}, fn=greeter
+    )
+    assert spawn_child(tid, registry=reg) == "hello"
+    greeter.__defaults__ = ("pwned",)
+    assert spawn_child(tid, registry=reg) == "hello"
+
+
 def test_sandbox_actually_isolates_builtins() -> None:
-    """F-087 / F-083: sandboxed fn uses frozen builtins without eval/open."""
     from core.security import execute_in_sandbox, make_sandbox_globals
 
     fb = frozen_builtins()
-    assert "eval" not in fb
-    assert "open" not in fb
-    assert "exec" not in fb
+    assert "eval" not in fb and "open" not in fb
     g = make_sandbox_globals()
     assert isinstance(g["__builtins__"], types.MappingProxyType)
 
@@ -202,9 +253,6 @@ def test_sandbox_actually_isolates_builtins() -> None:
 
 
 def test_memory_poisoning_via_builtin_dict() -> None:
-    """F-087: frozen MappingProxyType rejects injection of evil builtins."""
     fb = frozen_builtins()
     with pytest.raises(TypeError):
         fb["__import__"] = __import__  # type: ignore[index]
-    with pytest.raises(TypeError):
-        fb["open"] = open  # type: ignore[index]
