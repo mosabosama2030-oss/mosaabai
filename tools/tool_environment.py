@@ -1,7 +1,7 @@
 """ToolEnvironment — injectable capability-scoped container.
 
-EO-003 / EO-005 G4: I-005 Monotonic Delegation enforced by tool_id
-(not name). Same-name substitution is rejected at the identity boundary.
+EO-003 / EO-005 G4 remediation (F-016): I-005 enforced by *recomputed*
+canonical digests, never by self-reported tool.tool_id alone.
 """
 
 from __future__ import annotations
@@ -9,13 +9,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from tools.tool_interface import Tool
+from tools.tool_interface import Tool, compute_tool_id
 
 __all__ = [
     "ToolEnvironment",
     "CapabilityViolationError",
     "EmptyEnvironment",
     "create_root",
+    "canonical_tool_id",
 ]
 
 
@@ -46,6 +47,28 @@ class CapabilityViolationError(Exception):
         }
 
 
+def canonical_tool_id(tool: Tool) -> str:
+    """Independently recompute identity from the tool's public spec.
+
+    Never trust tool.tool_id alone (F-016). The digest is derived only from
+    to_schema() fields — an overridden tool_id property cannot forge this.
+    """
+    return compute_tool_id(tool.to_schema())
+
+
+def _assert_identity_bound(tool: Tool, environment_id: str | None = None) -> str:
+    """Return canonical id; raise CapabilityViolationError on self-attested mismatch."""
+    canonical = canonical_tool_id(tool)
+    claimed = getattr(tool, "tool_id", None)
+    if claimed is not None and claimed != canonical:
+        raise CapabilityViolationError(
+            parent_id=environment_id,
+            child_id=getattr(tool, "name", "?"),
+            violating_capabilities={f"forged_tool_id:{getattr(tool, 'name', '?')}"},
+        )
+    return canonical
+
+
 @dataclass(frozen=True)
 class ToolEnvironment:
     """Immutable, capability-scoped tool registry (no global state)."""
@@ -56,8 +79,8 @@ class ToolEnvironment:
     parent_id: str | None = None
 
     def trusted_ids(self) -> frozenset[str]:
-        """Frozen set of canonical tool_ids in this environment."""
-        return frozenset(tool.tool_id for tool in self.tools)
+        """Frozen set of *recomputed* canonical tool_ids (not self-reported)."""
+        return frozenset(canonical_tool_id(tool) for tool in self.tools)
 
     def has_tool(self, name: str) -> bool:
         return any(tool.name == name for tool in self.tools)
@@ -84,28 +107,42 @@ class ToolEnvironment:
 
         Rules:
           * new.capabilities ⊆ self.capabilities
-          * every child tool.tool_id must exist in parent (identity, not name)
+          * every child tool's *recomputed* canonical id ⊆ parent trusted_ids
+          * self-reported tool_id must match recomputed digest (F-016)
           * same-name / different-id substitution is rejected
         """
         violating_capabilities = capabilities - self.capabilities
         parent_ids = self.trusted_ids()
-        child_ids = {t.tool_id for t in tools}
+
+        forged: set[str] = set()
+        child_canonical: dict[str, str] = {}
+        for t in tools:
+            try:
+                cid = _assert_identity_bound(t, environment_id=self.environment_id)
+            except CapabilityViolationError as exc:
+                forged |= set(exc.violating_capabilities)
+                cid = canonical_tool_id(t)
+            child_canonical[t.name] = cid
+
+        child_ids = set(child_canonical.values())
         violating_ids = child_ids - parent_ids
 
-        parent_name_to_id = {t.name: t.tool_id for t in self.tools}
+        parent_name_to_id = {t.name: canonical_tool_id(t) for t in self.tools}
         substitutions: set[str] = set()
         for t in tools:
             expected = parent_name_to_id.get(t.name)
-            if expected is not None and expected != t.tool_id:
+            actual = child_canonical.get(t.name)
+            if expected is not None and actual is not None and expected != actual:
                 substitutions.add(f"substitution:{t.name}")
 
-        if violating_capabilities or violating_ids or substitutions:
-            name_for_id = {t.tool_id: t.name for t in tools}
+        if violating_capabilities or violating_ids or substitutions or forged:
+            name_for_id = {cid: name for name, cid in child_canonical.items()}
             violations = (
                 set(violating_capabilities)
                 | {f"tool_id:{tid}" for tid in violating_ids}
                 | {f"tool:{name_for_id[tid]}" for tid in violating_ids if tid in name_for_id}
                 | substitutions
+                | forged
             )
             raise CapabilityViolationError(
                 parent_id=self.environment_id,
@@ -138,15 +175,17 @@ def create_root(
 ) -> ToolEnvironment:
     """Create a root ToolEnvironment (fresh instance every call).
 
-    Each tool must expose a valid tool_id; missing identity is rejected.
+    Each tool's self-reported tool_id must match the recomputed digest (F-016).
     """
     validated: list[Tool] = []
     for tool in tools:
-        tid = getattr(tool, "tool_id", None)
-        if not tid or not isinstance(tid, str):
+        try:
+            _assert_identity_bound(tool, environment_id=None)
+        except CapabilityViolationError as exc:
             raise ValueError(
-                f"tool {getattr(tool, 'name', '?')!r} has no valid tool_id"
-            )
+                f"tool {getattr(tool, 'name', '?')!r} has forged tool_id: "
+                f"{sorted(exc.violating_capabilities)}"
+            ) from exc
         validated.append(tool)
     return ToolEnvironment(
         environment_id=environment_id,
