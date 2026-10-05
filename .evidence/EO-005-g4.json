@@ -1,23 +1,28 @@
 {
   "task_id": "EO-005-g4",
   "base_sha": "a12e63807141450146994b026a099ebd0a0a2e5e",
-  "head_sha": "70422b8c9dd086e33e32cd52fb4353c8750dcbaf",
+  "head_sha": "7281898aef7489d08b70759a415f395e426539e2",
   "changed_files": [
     "tools/tool_interface.py",
     "tools/tool_environment.py",
     "tools/tool_registry.py",
-    "tests/test_tool_identity.py"
+    "tests/test_tool_identity.py",
+    ".evidence/EO-005-g4.json"
   ],
   "agent": "grok",
   "provider": "xai",
   "model": "grok-4",
-  "tests_added": 12,
+  "tests_added": 14,
   "tests_run": "pytest -v tests/test_tool_identity.py",
-  "test_result": "12 passed",
-  "full_suite_result": "NOT_EXECUTED",
-  "lint_result": "NOT_AVAILABLE",
-  "invariant_results": {"I-005": "PASS", "I-008": "PASS"},
-  "security_result": "PASS",
-  "timestamp": "2026-10-05T07:34:00Z",
-  "notes": "Evidence file committed per Council amendment. ToolRegistry kept for BC."
+  "test_result": "14 passed",
+  "full_suite_result": "PARTIAL — identity 14/14 PASS; full clone incomplete (pytest-asyncio install 502; ~150 non-async tests passed)",
+  "lint_result": "NOT_AVAILABLE (ruff install network 502)",
+  "invariant_results": {
+    "I-005": "REMEDIATED — recompute digest from to_schema(); forged tool_id rejected (F-016 tests PASS)",
+    "I-008": "PASS — identity bound to canonical schema digest"
+  },
+  "security_result": "REMEDIATED_PENDING_REAUDIT — F-016 closed in code+tests; F-017 facade; awaiting Gemini re-audit",
+  "findings_addressed": ["F-016", "F-017", "F-018"],
+  "timestamp": "2026-10-05T08:08:00Z",
+  "notes": "Prior PASS claims retracted (F-018). No PR opened per Council instruction."
 }
