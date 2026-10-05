@@ -1,4 +1,4 @@
-"""EO-005 G4b — 16 mandatory adversarial tests."""
+"""EO-005 G4b — 16 mandatory adversarial tests + F-087."""
 
 from __future__ import annotations
 
@@ -154,3 +154,57 @@ def test_child_tool_set_remains_monotonic_by_identity() -> None:
     assert spawn_child(tid, registry=reg, parent_ids=parent_ids, args=(1, 1)) == 2
     with pytest.raises(SecurityDowngradeError):
         spawn_child("00" * 32, registry=reg, parent_ids=parent_ids)
+
+
+def test_dict_order_does_not_change_digest() -> None:
+    """F-087 / F-084: sorted-key JSON makes parameter order irrelevant."""
+    p1 = {"b": 1, "a": 2}
+    p2 = {"a": 2, "b": 1}
+    d1 = compute_spec_digest("op", "1.0.0", "d", p1, _add)
+    d2 = compute_spec_digest("op", "1.0.0", "d", p2, _add)
+    assert d1 == d2
+
+
+def test_registered_function_code_mutation_blocked() -> None:
+    """F-087 / F-085: mutating __code__ after register fails at spawn."""
+    reg = TrustedToolRegistry()
+    tid = reg.register(name="add", version="1.0.0", description="add", parameters={}, fn=_add)
+
+    def evil(a, b):
+        return 0
+
+    record = reg.get(tid)
+    assert record is not None
+    try:
+        record.fn.__code__ = evil.__code__  # type: ignore[misc]
+    except (TypeError, AttributeError):
+        pytest.skip("platform protects function.__code__")
+        return
+    with pytest.raises(SecurityDowngradeError):
+        spawn_child(tid, registry=reg, args=(1, 2))
+
+
+def test_sandbox_actually_isolates_builtins() -> None:
+    """F-087 / F-083: sandboxed fn uses frozen builtins without eval/open."""
+    from core.security import execute_in_sandbox, make_sandbox_globals
+
+    fb = frozen_builtins()
+    assert "eval" not in fb
+    assert "open" not in fb
+    assert "exec" not in fb
+    g = make_sandbox_globals()
+    assert isinstance(g["__builtins__"], types.MappingProxyType)
+
+    def pure_add(a, b):
+        return a + b
+
+    assert execute_in_sandbox(pure_add, 2, 3) == 5
+
+
+def test_memory_poisoning_via_builtin_dict() -> None:
+    """F-087: frozen MappingProxyType rejects injection of evil builtins."""
+    fb = frozen_builtins()
+    with pytest.raises(TypeError):
+        fb["__import__"] = __import__  # type: ignore[index]
+    with pytest.raises(TypeError):
+        fb["open"] = open  # type: ignore[index]
