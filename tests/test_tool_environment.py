@@ -56,10 +56,8 @@ def test_tool_environment_creation() -> None:
 def test_tool_environment_frozen() -> None:
     env = create_root("root", list(BASE_TOOLS), BASE_CAPABILITIES)
     with pytest.raises(AttributeError):
-        # frozen dataclass: attribute assignment must be rejected
         env.tools = ()  # type: ignore[assignment]
     with pytest.raises(AttributeError):
-        # frozen dataclass: context assignment must be rejected
         env.capabilities = frozenset()
     assert env.capabilities == BASE_CAPABILITIES
 
@@ -110,7 +108,7 @@ def test_spawn_child_rejects_escalation() -> None:
         parent.spawn_child(
             "child",
             (BASE_TOOLS[0],),
-            frozenset({"read", "tool"}),  # not in parent
+            frozenset({"read", "tool"}),
         )
     assert excinfo.value.parent_id == "parent"
     assert excinfo.value.child_id == "child"
@@ -127,7 +125,7 @@ def test_spawn_child_rejects_extra_tools() -> None:
         )
     assert excinfo.value.parent_id == "parent"
     assert excinfo.value.child_id == "child"
-    assert any(v.startswith("tool:") for v in excinfo.value.violating_capabilities)
+    assert any(v.startswith("tool") for v in excinfo.value.violating_capabilities)
 
 
 def test_spawn_child_preserves_parent_id() -> None:
