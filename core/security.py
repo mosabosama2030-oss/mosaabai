@@ -1,8 +1,8 @@
 """EO-005 G4 — cryptographic identity, AST whitelist, frozen builtins.
 
-Fix Sprint 2:
-  F-083 sandbox actually bound
-  F-084 canonical JSON digest + co_consts/co_names/co_varnames
+Sprint 3:
+  F-084 recursive stable code fingerprint (no default=str / no addresses)
+  F-083 sandbox FunctionType bind (kept)
 """
 
 from __future__ import annotations
@@ -32,6 +32,7 @@ __all__ = [
     "frozen_builtins",
     "make_sandbox_globals",
     "execute_in_sandbox",
+    "stable_fingerprint",
     "ASTSecurityViolationError",
     "RegistryImmutableError",
     "SecurityDowngradeError",
@@ -119,15 +120,60 @@ def assert_pure_code_object(fn: Callable[..., Any]) -> None:
         raise StatefulToolError(f"co_cellvars not empty: {code.co_cellvars}")
 
 
-def _code_fingerprint(code: types.CodeType) -> dict[str, Any]:
-    return {
-        "co_code": code.co_code.hex(),
-        "co_consts": list(code.co_consts),
-        "co_names": list(code.co_names),
-        "co_varnames": list(code.co_varnames),
-        "co_argcount": code.co_argcount,
-        "co_flags": code.co_flags,
-    }
+def stable_fingerprint(value: Any) -> Any:
+    """Recursive stable structure for hashing (F-084)."""
+    if isinstance(value, types.CodeType):
+        return {
+            "kind": "code",
+            "co_code": value.co_code.hex(),
+            "co_consts": [stable_fingerprint(c) for c in value.co_consts],
+            "co_names": list(value.co_names),
+            "co_varnames": list(value.co_varnames),
+            "co_argcount": value.co_argcount,
+            "co_kwonlyargcount": value.co_kwonlyargcount,
+            "co_flags": value.co_flags,
+            "co_nlocals": value.co_nlocals,
+        }
+    if isinstance(value, (bool, int, float, str, type(None))):
+        return value
+    if isinstance(value, bytes):
+        return {"kind": "bytes", "hex": value.hex()}
+    if isinstance(value, tuple):
+        return {"kind": "tuple", "items": [stable_fingerprint(x) for x in value]}
+    if isinstance(value, list):
+        return {"kind": "list", "items": [stable_fingerprint(x) for x in value]}
+    if isinstance(value, dict):
+        return {
+            "kind": "dict",
+            "items": [
+                [stable_fingerprint(k), stable_fingerprint(v)]
+                for k, v in sorted(
+                    value.items(),
+                    key=lambda kv: json.dumps(
+                        stable_fingerprint(kv[0]),
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                )
+            ],
+        }
+    if isinstance(value, frozenset):
+        items = sorted(
+            json.dumps(
+                stable_fingerprint(x), sort_keys=True, separators=(",", ":")
+            )
+            for x in value
+        )
+        return {"kind": "frozenset", "items": items}
+    if isinstance(value, set):
+        items = sorted(
+            json.dumps(
+                stable_fingerprint(x), sort_keys=True, separators=(",", ":")
+            )
+            for x in value
+        )
+        return {"kind": "set", "items": items}
+    return {"kind": "opaque", "type": type(value).__name__}
 
 
 def compute_spec_digest(
@@ -136,17 +182,26 @@ def compute_spec_digest(
     description: str,
     parameters: dict[str, Any],
     fn: Callable[..., Any],
+    *,
+    defaults: tuple[Any, ...] | None = None,
+    kwdefaults: dict[str, Any] | None = None,
 ) -> str:
-    """SHA-256 of canonical JSON metadata + code fingerprint (F-084)."""
+    """SHA-256 of canonical JSON over stable recursive fingerprint (F-084/F-085)."""
     code = fn.__code__
+    if defaults is None:
+        defaults = fn.__defaults__
+    if kwdefaults is None:
+        kwdefaults = fn.__kwdefaults__
     meta = {
         "name": name,
         "version": version,
         "description": description,
-        "parameters": parameters,
-        "code": _code_fingerprint(code),
+        "parameters": stable_fingerprint(parameters),
+        "code": stable_fingerprint(code),
+        "defaults": stable_fingerprint(defaults),
+        "kwdefaults": stable_fingerprint(kwdefaults),
     }
-    canonical = json.dumps(meta, sort_keys=True, separators=(",", ":"), default=str)
+    canonical = json.dumps(meta, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
@@ -167,8 +222,14 @@ def make_sandbox_globals() -> dict[str, Any]:
     return {"__builtins__": frozen_builtins()}
 
 
-def execute_in_sandbox(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-    """Execute *fn* bound to sanitized globals (F-083)."""
+def execute_in_sandbox(
+    fn: Callable[..., Any],
+    *args: Any,
+    defaults: tuple[Any, ...] | None = None,
+    kwdefaults: dict[str, Any] | None = None,
+    **kwargs: Any,
+) -> Any:
+    """Execute *fn* bound to sanitized globals; use snapshot defaults (F-083/F-085)."""
     sandbox = make_sandbox_globals()
     if not isinstance(sandbox["__builtins__"], types.MappingProxyType):
         raise SecurityDowngradeError("__builtins__ is not frozen")
@@ -177,12 +238,16 @@ def execute_in_sandbox(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any
     if code.co_freevars or code.co_cellvars:
         raise StatefulToolError("cannot sandbox function with free/cell vars")
 
+    argdefs = defaults if defaults is not None else fn.__defaults__
     sandboxed = types.FunctionType(
         code,
         sandbox,
         name=fn.__name__,
-        argdefs=fn.__defaults__,
+        argdefs=argdefs,
         closure=None,
     )
-    sandboxed.__kwdefaults__ = fn.__kwdefaults__
+    if kwdefaults is not None:
+        sandboxed.__kwdefaults__ = dict(kwdefaults)
+    else:
+        sandboxed.__kwdefaults__ = None
     return sandboxed(*args, **kwargs)
