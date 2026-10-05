@@ -44,3 +44,27 @@ def test_loop_does_not_swallow_security_errors() -> None:
     loop._run_stage = boom  # type: ignore[method-assign]
     with pytest.raises(SecurityDowngradeError):
         asyncio.run(loop.run("x"))
+
+
+def test_full_10_stage_loop_with_tool_execution(tmp_path) -> None:  # noqa: ANN001
+    """F-087 / F-086: 10 stages + spawn_child + WAL."""
+    from core.cognitive_loop import CognitiveLoop, LoopStage, Task
+    from core.wal import IntentStatus, WriteAheadLog
+    from tools.trusted_registry import TrustedToolRegistry
+
+    def _add(a, b):
+        return a + b
+
+    reg = TrustedToolRegistry()
+    tid = reg.register(name="add", version="1.0.0", description="add", parameters={}, fn=_add)
+    wal = WriteAheadLog(tmp_path / "loop.wal")
+    loop = CognitiveLoop(registry=reg, wal=wal)
+    task = Task(description="sum", tool_id=tid, tool_args=(2, 5))
+    result = asyncio.run(loop.run(task))
+    assert result.success is True
+    assert result.tool_output == 7
+    assert result.answer == "7"
+    assert len(result.stages) == 10
+    assert LoopStage.EXECUTE in result.stages
+    entries = [e for e in wal._read_all() if e.status == IntentStatus.COMPLETED]
+    assert len(entries) >= 1
