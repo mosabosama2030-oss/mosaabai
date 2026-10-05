@@ -1,7 +1,7 @@
 {
   "task_id": "G5",
   "base_sha": "008744f30d03c73dac6cc4d27ec44f1719ae330f",
-  "head_sha": "PENDING",
+  "head_sha": "60b49bc1ffc7b60b8626e85d1108c96c92637ff3",
   "test_results": "integration_passed",
   "lint_results": "NOT_AVAILABLE_local",
   "audit_token": null,
