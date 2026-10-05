@@ -50,17 +50,12 @@ class TaskResult:
 
 
 class CognitiveLoop:
-    """Sovereign cognitive loop.
-
-    Entry point for all task execution. Every stage is replaceable; the
-    loop owns orchestration and state, not the individual reasoning engines.
-    """
+    """Sovereign cognitive loop."""
 
     def __init__(self) -> None:
         self._stages = list(LoopStage)
 
     async def run(self, task: str | Task) -> TaskResult:
-        """Run a task through the full cognitive loop."""
         if isinstance(task, str):
             task = Task(description=task)
 
@@ -70,7 +65,24 @@ class CognitiveLoop:
             result.stages.append(stage)
             try:
                 await self._run_stage(stage, task, result)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
+                from core.security import (
+                    ASTSecurityViolation,
+                    RegistryImmutableError,
+                    SecurityDowngradeError,
+                    StatefulToolError,
+                )
+
+                if isinstance(
+                    exc,
+                    (
+                        SecurityDowngradeError,
+                        ASTSecurityViolation,
+                        StatefulToolError,
+                        RegistryImmutableError,
+                    ),
+                ):
+                    raise
                 result.error = f"{stage.value}: {exc}"
                 result.success = False
                 break
@@ -79,7 +91,6 @@ class CognitiveLoop:
         return result
 
     async def _run_stage(self, stage: LoopStage, task: Task, result: TaskResult) -> None:
-        """Execute a single stage. Placeholder; each stage is implemented in later phases."""
         if stage is LoopStage.ANSWER:
             result.answer = f"[stub] task received: {task.description}"
             result.success = True
