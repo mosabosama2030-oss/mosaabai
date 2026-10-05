@@ -1,7 +1,4 @@
-"""Secure spawn_child — tool_id required, sandbox execution (EO-005 G4).
-
-F-085: verify_code_integrity() before sandbox execute.
-"""
+"""Secure spawn_child — tool_id required, sandbox execution (EO-005 G4)."""
 
 from __future__ import annotations
 
@@ -31,10 +28,15 @@ def spawn_child(
     if record is None:
         raise SecurityDowngradeError(f"unknown tool_id (fail closed): {tool_id[:16]}…")
 
-    # F-085: TOCTOU-safe re-check of bytecode digest at execution boundary
     record.verify_code_integrity()
 
     fb = frozen_builtins()
     if not isinstance(fb, types.MappingProxyType):
         raise SecurityDowngradeError("__builtins__ freeze violated")
-    return execute_in_sandbox(record.fn, *(args or ()), **(kwargs or {}))
+    return execute_in_sandbox(
+        record.fn,
+        *(args or ()),
+        defaults=record.defaults,
+        kwdefaults=record.kwdefaults,
+        **(kwargs or {}),
+    )

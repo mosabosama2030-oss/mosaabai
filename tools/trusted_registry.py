@@ -1,7 +1,6 @@
 """TrustedToolRegistry — immutable, identity-bound registry (EO-005 G4).
 
-F-085: at execution time, recompute digest from live __code__ and reject
-if it no longer matches the registered tool_id (TOCTOU-safe re-check).
+F-085: snapshot defaults/kwdefaults at registration; re-verify digest at execution.
 """
 
 from __future__ import annotations
@@ -30,15 +29,22 @@ class TrustedTool:
     description: str
     parameters: dict[str, Any]
     fn: Callable[..., Any]
+    defaults: tuple[Any, ...] | None
+    kwdefaults: dict[str, Any] | None
 
     def verify_code_integrity(self) -> None:
-        """Recompute digest from current __code__; raise if mutated (F-085)."""
         current = compute_spec_digest(
-            self.name, self.version, self.description, self.parameters, self.fn
+            self.name,
+            self.version,
+            self.description,
+            self.parameters,
+            self.fn,
+            defaults=self.defaults,
+            kwdefaults=self.kwdefaults,
         )
         if current != self.tool_id:
             raise SecurityDowngradeError(
-                f"registered function code mutated (digest mismatch): {self.name}"
+                f"registered function code/defaults mutated (digest mismatch): {self.name}"
             )
 
 
@@ -64,7 +70,17 @@ class TrustedToolRegistry:
             raise SecurityDowngradeError("tool name required")
         assert_pure_code_object(fn)
         analyze_function_ast(fn)
-        tool_id = compute_spec_digest(name, version, description, parameters, fn)
+        defaults = fn.__defaults__
+        kwdefaults = dict(fn.__kwdefaults__) if fn.__kwdefaults__ else None
+        tool_id = compute_spec_digest(
+            name,
+            version,
+            description,
+            parameters,
+            fn,
+            defaults=defaults,
+            kwdefaults=kwdefaults,
+        )
         if tool_id in self._mutable:
             raise RegistryImmutableError(f"tool_id already registered: {tool_id[:16]}…")
         prior = self._by_name.get(name)
@@ -77,6 +93,8 @@ class TrustedToolRegistry:
             description=description,
             parameters=dict(parameters),
             fn=fn,
+            defaults=defaults,
+            kwdefaults=kwdefaults,
         )
         self._mutable[tool_id] = record
         self._by_name[name] = tool_id
@@ -101,4 +119,10 @@ class TrustedToolRegistry:
         return frozenset(self._mutable.keys())
 
     def is_trusted(self, tool_id: str) -> bool:
-        return tool_id in self._mutable
+        if tool_id not in self._mutable:
+            return False
+        try:
+            self._mutable[tool_id].verify_code_integrity()
+        except SecurityDowngradeError:
+            return False
+        return True
