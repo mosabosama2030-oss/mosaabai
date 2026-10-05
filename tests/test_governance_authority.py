@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import FrozenInstanceError
+
 import pytest
 
 from core.security_exceptions import AuthorityViolationError
@@ -29,5 +31,5 @@ def test_child_exceeds_parent_rejected() -> None:
 
 def test_authority_immutable() -> None:
     auth = Authority(subject="human", scope=frozenset({"x"}))
-    with pytest.raises(Exception):
+    with pytest.raises(FrozenInstanceError):
         auth.subject = "other"  # type: ignore[misc]
