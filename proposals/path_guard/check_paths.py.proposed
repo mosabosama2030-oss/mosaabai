@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+"""Path guard — fail CI if changed files are outside allowed_paths whitelist.
+
+PROPOSAL ONLY. Human Director wires this into CI.
+
+Usage:
+  python check_paths.py.proposed --config allowed_paths.yaml --base SHA --head SHA
+"""
+
+from __future__ import annotations
+
+import argparse
+import subprocess
+import sys
+from pathlib import Path
+
+
+def load_allowed(config_path: Path) -> list[str]:
+    try:
+        import yaml  # type: ignore
+    except ImportError:
+        yaml = None
+    text = config_path.read_text(encoding="utf-8")
+    if yaml is not None:
+        data = yaml.safe_load(text) or {}
+        paths = data.get("allowed_paths") or data.get("paths") or []
+        return [str(p) for p in paths]
+    paths: list[str] = []
+    in_list = False
+    for line in text.splitlines():
+        if line.strip().startswith("allowed_paths:"):
+            in_list = True
+            continue
+        if in_list:
+            if line.startswith(" ") or line.startswith("\t") or line.startswith("-"):
+                item = line.strip().lstrip("-").strip().strip("'\"")
+                if item:
+                    paths.append(item)
+            else:
+                break
+    return paths
+
+
+def git_changed_files(base: str, head: str) -> list[str]:
+    proc = subprocess.run(
+        ["git", "diff", "--name-status", "--find-renames", f"{base}..{head}"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        print(proc.stderr, file=sys.stderr)
+        sys.exit(2)
+    files: list[str] = []
+    for line in proc.stdout.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        status = parts[0]
+        if status.startswith("R") or status.startswith("C"):
+            files.append(parts[1])
+            files.append(parts[2])
+        else:
+            files.append(parts[-1])
+    return files
+
+
+def git_mode(path: str, head: str) -> str | None:
+    proc = subprocess.run(
+        ["git", "ls-tree", head, "--", path],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    return proc.stdout.split()[0]
+
+
+def is_allowed(path: str, allowed: list[str]) -> bool:
+    if ".." in path.split("/"):
+        return False
+    for prefix in allowed:
+        if path == prefix or path.startswith(prefix.rstrip("/") + "/"):
+            return True
+        if prefix.endswith("/**"):
+            root = prefix[:-3]
+            if path == root or path.startswith(root.rstrip("/") + "/"):
+                return True
+    return False
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Path guard whitelist checker")
+    parser.add_argument("--config", required=True, help="YAML with allowed_paths")
+    parser.add_argument("--base", required=True, help="Base SHA")
+    parser.add_argument("--head", required=True, help="Head SHA")
+    args = parser.parse_args()
+
+    allowed = load_allowed(Path(args.config))
+    if not allowed:
+        print("ERROR: empty allowed_paths", file=sys.stderr)
+        return 2
+
+    changed = git_changed_files(args.base, args.head)
+    violations: list[str] = []
+    for path in changed:
+        mode = git_mode(path, args.head)
+        if mode == "160000":
+            violations.append(f"{path} (submodule)")
+            continue
+        if mode == "120000":
+            violations.append(f"{path} (symlink)")
+            continue
+        if not is_allowed(path, allowed):
+            violations.append(path)
+
+    if violations:
+        print("Path guard FAILED — files outside whitelist:")
+        for v in violations:
+            print(f"  - {v}")
+        return 1
+    print(f"Path guard OK — {len(changed)} path(s) within whitelist")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
