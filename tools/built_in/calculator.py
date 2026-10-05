@@ -88,6 +88,7 @@ class Calculator(Tool):
     """Evaluate arithmetic expressions given as text."""
 
     name = "calculator"
+    version = "1.0.0"
     description = "Evaluate an arithmetic expression and return its numeric result."
     parameters = {
         "type": "object",
