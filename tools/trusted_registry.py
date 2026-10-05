@@ -1,4 +1,8 @@
-"""TrustedToolRegistry — immutable, identity-bound registry (EO-005 G4)."""
+"""TrustedToolRegistry — immutable, identity-bound registry (EO-005 G4).
+
+F-085: at execution time, recompute digest from live __code__ and reject
+if it no longer matches the registered tool_id (TOCTOU-safe re-check).
+"""
 
 from __future__ import annotations
 
@@ -26,6 +30,16 @@ class TrustedTool:
     description: str
     parameters: dict[str, Any]
     fn: Callable[..., Any]
+
+    def verify_code_integrity(self) -> None:
+        """Recompute digest from current __code__; raise if mutated (F-085)."""
+        current = compute_spec_digest(
+            self.name, self.version, self.description, self.parameters, self.fn
+        )
+        if current != self.tool_id:
+            raise SecurityDowngradeError(
+                f"registered function code mutated (digest mismatch): {self.name}"
+            )
 
 
 class TrustedToolRegistry:
