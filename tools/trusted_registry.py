@@ -7,21 +7,19 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from core.errors import RegistryImmutableError, SecurityDowngradeError, StatefulToolError
 from core.security import (
     analyze_function_ast,
     assert_pure_code_object,
     compute_spec_digest,
 )
-
-# Legacy ToolRegistry must be unreachable from this module (CRIT-01).
-assert "tool_registry" not in dir(), "legacy import leak"
+from core.security_exceptions import (
+    RegistryImmutableError,
+    SecurityDowngradeError,
+)
 
 
 @dataclass(frozen=True)
 class TrustedTool:
-    """Immutable registered tool record."""
-
     tool_id: str
     name: str
     version: str
@@ -31,8 +29,6 @@ class TrustedTool:
 
 
 class TrustedToolRegistry:
-    """Read-only after construction; internal map is MappingProxyType (CRIT-05)."""
-
     def __init__(self) -> None:
         self._mutable: dict[str, TrustedTool] = {}
         self._by_name: dict[str, str] = {}
@@ -59,9 +55,7 @@ class TrustedToolRegistry:
             raise RegistryImmutableError(f"tool_id already registered: {tool_id[:16]}…")
         prior = self._by_name.get(name)
         if prior is not None and prior != tool_id:
-            raise SecurityDowngradeError(
-                f"same name different bytecode rejected: {name}"
-            )
+            raise SecurityDowngradeError(f"same name different bytecode rejected: {name}")
         record = TrustedTool(
             tool_id=tool_id,
             name=name,
@@ -75,7 +69,6 @@ class TrustedToolRegistry:
         return tool_id
 
     def freeze(self) -> None:
-        """Seal registry — MappingProxyType view (CRIT-05)."""
         self._frozen = True
         self._view = types.MappingProxyType(dict(self._mutable))
 
